@@ -8,6 +8,15 @@ class RizParseError(Exception): ...
 
 
 @dataclass(frozen=True)
+class Integer:
+    value: int
+
+    @override
+    def __str__(self):
+        return str(self.value)
+
+
+@dataclass(frozen=True)
 class Rational:
     numerator: int
     denominator: int
@@ -25,7 +34,9 @@ class Rational:
 
 
 class Riz:
-    def evaluate(self, source: str) -> Rational:
+    def evaluate(self, source: str) -> Integer | Rational:
+        if re.match(r"^\d+$", source):
+            return Integer(int(source))
         match = re.match(r"^(\d+)/(\d+)$", source)
         if not match:
             raise RizParseError("Invalid syntax.")
@@ -36,3 +47,9 @@ class Riz:
 def test_divides_to_lowest_terms():
     assert str(Riz().evaluate("6/3")) == "2"
     assert str(Riz().evaluate("6/4")) == "3/2"
+    assert str(Riz().evaluate("5/4")) == "5/4"
+
+
+def test_integer_parsing():
+    assert str(Riz().evaluate("5")) == "5"
+    assert str(Riz().evaluate("4")) == "4"
