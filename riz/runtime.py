@@ -1,21 +1,15 @@
 """The Riz runtime."""
 
-import re
-
+from .eval import eval
 from .integer import Integer
-from .parse import RizParseError
+from .lex import lex
+from .parse import RizParseError, parse
 from .rational import Rational
 
 
 class Runtime:
     def evaluate(self, source: str) -> Integer | Rational:
-        if re.match(r"^\d+$", source):
-            return Integer(int(source))
-        match = re.match(r"^(\d+)/(\d+)$", source)
-        if not match:
-            raise RizParseError("Invalid syntax.")
-        num, den = match.group(1, 2)
-        return Rational(int(num), int(den))
+        return eval(parse(lex(source)))
 
 
 def test_integer_parsing():
@@ -26,8 +20,8 @@ def test_integer_parsing():
 
 def test_non_decimal_digits_rejected():
     riz = Runtime()
-    # str.isdigit() accepts these but int() would reject them; they must
-    # surface as RizParseError, not a leaked host ValueError.
+    # Digit-like characters that aren't decimal digits (str.isdigit() is True
+    # but they're not Nd) must surface as RizParseError, not crash the runtime.
     for bad in ("²", "①"):
         try:
             _ = riz.evaluate(bad)
