@@ -1,0 +1,16 @@
+[project]
+name = "riz"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.8",
+    "pytest>=9.1.0",
+]
+
+[tool.pytest.ini_options]
+python_files = ["*.py"]
