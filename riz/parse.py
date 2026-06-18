@@ -24,6 +24,11 @@ class IntLiteral:
 
 
 @dataclass(frozen=True)
+class Negate:
+    operand: Expr
+
+
+@dataclass(frozen=True)
 class Add:
     left: Expr
     right: Expr
@@ -47,7 +52,7 @@ class Divide:
     right: Expr
 
 
-Expr = IntLiteral | Add | Subtract | Multiply | Divide
+Expr = IntLiteral | Negate | Add | Subtract | Multiply | Divide
 
 
 # Infix operators: token type -> (binding power, AST constructor).
@@ -58,6 +63,10 @@ _INFIX: dict[type[Token], tuple[int, Callable[[Expr, Expr], Expr]]] = {
     StarToken: (2, Multiply),
     SlashToken: (2, Divide),
 }
+
+# Prefix `-` (negation) binds tighter than any binary operator, so `-2*3`
+# is `(-2)*3` and `-2-3` is `(-2)-3`.
+_PREFIX_BP = 3
 
 
 class _Parser:
@@ -96,6 +105,9 @@ class _Parser:
                 raise RizParseError("Invalid syntax.")
             self.position += 1
             return inner
+        if isinstance(token, MinusToken):
+            self.position += 1
+            return Negate(self.expression(_PREFIX_BP))
         raise RizParseError("Invalid syntax.")
 
 

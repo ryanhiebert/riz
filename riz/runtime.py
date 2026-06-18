@@ -87,3 +87,15 @@ def test_whitespace():
     assert str(riz.evaluate("2 + 3")) == "5"
     assert str(riz.evaluate(" 1/2  +  1/3 ")) == "5/6"
     assert str(riz.evaluate("(2 + 3) * 4")) == "20"
+
+
+def test_unary_minus():
+    riz = Runtime()
+    assert str(riz.evaluate("-3")) == "-3"
+    assert str(riz.evaluate("-1/2")) == "-1/2"  # (-1)/2, a negative rational
+    assert str(riz.evaluate("-(2+3)")) == "-5"  # negates a parenthesized group
+    assert str(riz.evaluate("-2*3")) == "-6"  # (-2)*3 — binds tighter than *
+    assert str(riz.evaluate("2*-3")) == "-6"  # 2*(-3) — prefix in operand position
+    assert str(riz.evaluate("-2-3")) == "-5"  # (-2)-3, not -(2-3)
+    assert str(riz.evaluate("2--3")) == "5"  # 2-(-3)
+    assert str(riz.evaluate("--3")) == "3"  # double negation
