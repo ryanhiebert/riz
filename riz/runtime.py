@@ -66,3 +66,24 @@ def test_operator_precedence():
     riz = Runtime()
     assert str(riz.evaluate("1+1/2")) == "3/2"
     assert str(riz.evaluate("6/4/2")) == "3/4"
+
+
+def test_parentheses():
+    riz = Runtime()
+    assert str(riz.evaluate("(2+3)*4")) == "20"  # overrides precedence
+    assert str(riz.evaluate("2*(3+4)")) == "14"
+    assert str(riz.evaluate("(6+4)/2")) == "5"
+    for bad in ("(2+3", "2+3)", "()"):  # mismatched parens are parse errors
+        try:
+            _ = riz.evaluate(bad)
+        except RizParseError:
+            pass
+        else:
+            raise AssertionError(f"{bad!r} should raise RizParseError")
+
+
+def test_whitespace():
+    riz = Runtime()
+    assert str(riz.evaluate("2 + 3")) == "5"
+    assert str(riz.evaluate(" 1/2  +  1/3 ")) == "5/6"
+    assert str(riz.evaluate("(2 + 3) * 4")) == "20"

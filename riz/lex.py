@@ -29,11 +29,28 @@ class StarToken: ...
 
 
 @dataclass(frozen=True)
+class LeftParenthesisToken: ...
+
+
+@dataclass(frozen=True)
+class RightParenthesisToken: ...
+
+
+@dataclass(frozen=True)
 class UnknownToken:
     char: str
 
 
-Token = IntegerToken | SlashToken | PlusToken | MinusToken | StarToken | UnknownToken
+Token = (
+    IntegerToken
+    | SlashToken
+    | PlusToken
+    | MinusToken
+    | StarToken
+    | LeftParenthesisToken
+    | RightParenthesisToken
+    | UnknownToken
+)
 
 
 def lex(source: str) -> list[Token]:
@@ -41,7 +58,11 @@ def lex(source: str) -> list[Token]:
     position = 0
     while position < len(source):
         char = source[position]
-        if char == "/":
+        if char in (" ", "\t"):
+            # Discard horizontal whitespace. Newlines are left untouched; they
+            # may become statement separators later, like in Python.
+            position += 1
+        elif char == "/":
             tokens.append(SlashToken())
             position += 1
         elif char == "+":
@@ -52,6 +73,12 @@ def lex(source: str) -> list[Token]:
             position += 1
         elif char == "*":
             tokens.append(StarToken())
+            position += 1
+        elif char == "(":
+            tokens.append(LeftParenthesisToken())
+            position += 1
+        elif char == ")":
+            tokens.append(RightParenthesisToken())
             position += 1
         elif char.isdecimal():
             start = position

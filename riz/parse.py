@@ -3,7 +3,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .lex import IntegerToken, MinusToken, PlusToken, SlashToken, StarToken, Token
+from .lex import (
+    IntegerToken,
+    LeftParenthesisToken,
+    MinusToken,
+    PlusToken,
+    RightParenthesisToken,
+    SlashToken,
+    StarToken,
+    Token,
+)
 
 
 class RizParseError(Exception): ...
@@ -77,10 +86,17 @@ class _Parser:
 
     def primary(self) -> Expr:
         token = self.peek()
-        if not isinstance(token, IntegerToken):
-            raise RizParseError("Invalid syntax.")
-        self.position += 1
-        return IntLiteral(token.value)
+        if isinstance(token, IntegerToken):
+            self.position += 1
+            return IntLiteral(token.value)
+        if isinstance(token, LeftParenthesisToken):
+            self.position += 1
+            inner = self.expression(0)
+            if not isinstance(self.peek(), RightParenthesisToken):
+                raise RizParseError("Invalid syntax.")
+            self.position += 1
+            return inner
+        raise RizParseError("Invalid syntax.")
 
 
 def parse(tokens: list[Token]) -> Expr:
