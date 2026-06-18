@@ -13,9 +13,11 @@ from .lex import (
     StarToken,
     Token,
 )
+from .result import Err, Ok, Result
 
 
-class RizParseError(Exception): ...
+@dataclass(frozen=True)
+class RizParseError: ...
 
 
 @dataclass(frozen=True)
@@ -80,8 +82,11 @@ class _Parser:
     def peek(self) -> Token | None:
         return None if self.at_end() else self.tokens[self.position]
 
-    def expression(self, min_bp: int) -> Expr:
+    def expression(self, min_bp: int) -> Result[Expr]:
         left = self.primary()
+        if isinstance(left, Err):
+            return left
+        node = left.value
         while (token := self.peek()) is not None:
             infix = _INFIX.get(type(token))
             if infix is None:
@@ -90,30 +95,40 @@ class _Parser:
             if bp < min_bp:
                 break
             self.position += 1
-            left = make(left, self.expression(bp + 1))
-        return left
+            right = self.expression(bp + 1)
+            if isinstance(right, Err):
+                return right
+            node = make(node, right.value)
+        return Ok(node)
 
-    def primary(self) -> Expr:
+    def primary(self) -> Result[Expr]:
         token = self.peek()
         if isinstance(token, IntegerToken):
             self.position += 1
-            return IntLiteral(token.value)
+            return Ok(IntLiteral(token.value))
         if isinstance(token, LeftParenthesisToken):
             self.position += 1
             inner = self.expression(0)
+            if isinstance(inner, Err):
+                return inner
             if not isinstance(self.peek(), RightParenthesisToken):
-                raise RizParseError("Invalid syntax.")
+                return Err(RizParseError())
             self.position += 1
             return inner
         if isinstance(token, MinusToken):
             self.position += 1
-            return Negate(self.expression(_PREFIX_BP))
-        raise RizParseError("Invalid syntax.")
+            operand = self.expression(_PREFIX_BP)
+            if isinstance(operand, Err):
+                return operand
+            return Ok(Negate(operand.value))
+        return Err(RizParseError())
 
 
-def parse(tokens: list[Token]) -> Expr:
+def parse(tokens: list[Token]) -> Result[Expr]:
     parser = _Parser(tokens)
-    expr = parser.expression(0)
+    result = parser.expression(0)
+    if isinstance(result, Err):
+        return result
     if not parser.at_end():
-        raise RizParseError("Invalid syntax.")
-    return expr
+        return Err(RizParseError())
+    return result
