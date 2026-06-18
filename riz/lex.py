@@ -25,11 +25,15 @@ class MinusToken: ...
 
 
 @dataclass(frozen=True)
+class StarToken: ...
+
+
+@dataclass(frozen=True)
 class UnknownToken:
     char: str
 
 
-Token = IntegerToken | SlashToken | PlusToken | MinusToken | UnknownToken
+Token = IntegerToken | SlashToken | PlusToken | MinusToken | StarToken | UnknownToken
 
 
 def lex(source: str) -> list[Token]:
@@ -45,6 +49,9 @@ def lex(source: str) -> list[Token]:
             position += 1
         elif char == "-":
             tokens.append(MinusToken())
+            position += 1
+        elif char == "*":
+            tokens.append(StarToken())
             position += 1
         elif char.isdecimal():
             start = position
