@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .lex import IntegerToken, PlusToken, SlashToken, Token
+from .lex import IntegerToken, MinusToken, PlusToken, SlashToken, Token
 
 
 class RizParseError(Exception): ...
@@ -21,18 +21,25 @@ class Add:
 
 
 @dataclass(frozen=True)
+class Subtract:
+    left: Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
 class Divide:
     left: Expr
     right: Expr
 
 
-Expr = IntLiteral | Add | Divide
+Expr = IntLiteral | Add | Subtract | Divide
 
 
 # Infix operators: token type -> (binding power, AST constructor).
 # Higher binding power binds tighter; all are left-associative.
 _INFIX: dict[type[Token], tuple[int, Callable[[Expr, Expr], Expr]]] = {
     PlusToken: (1, Add),
+    MinusToken: (1, Subtract),
     SlashToken: (2, Divide),
 }
 

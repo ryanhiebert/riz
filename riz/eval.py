@@ -1,7 +1,7 @@
 """Evaluator: walk the syntax tree to produce Riz values."""
 
 from .integer import Integer
-from .parse import Add, Divide, Expr, IntLiteral
+from .parse import Add, Divide, Expr, IntLiteral, Subtract
 from .rational import Rational
 
 
@@ -11,6 +11,8 @@ def eval(node: Expr) -> Integer | Rational:
             return Integer(value)
         case Add(left, right):
             return _add(eval(left), eval(right))
+        case Subtract(left, right):
+            return _subtract(eval(left), eval(right))
         case Divide(left, right):
             return _divide(eval(left), eval(right))
 
@@ -21,6 +23,16 @@ def _add(left: Integer | Rational, right: Integer | Rational) -> Integer | Ratio
     a, b = _widen(left), _widen(right)
     return Rational(
         a.numerator * b.denominator + b.numerator * a.denominator,
+        a.denominator * b.denominator,
+    )
+
+
+def _subtract(left: Integer | Rational, right: Integer | Rational) -> Integer | Rational:
+    if isinstance(left, Integer) and isinstance(right, Integer):
+        return Integer(left.value - right.value)
+    a, b = _widen(left), _widen(right)
+    return Rational(
+        a.numerator * b.denominator - b.numerator * a.denominator,
         a.denominator * b.denominator,
     )
 

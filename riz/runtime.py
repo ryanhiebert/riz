@@ -45,6 +45,15 @@ def test_addition():
     assert str(riz.evaluate("2+3/4")) == "11/4"
 
 
+def test_subtraction():
+    riz = Runtime()
+    assert str(riz.evaluate("5-2")) == "3"
+    assert str(riz.evaluate("2-5")) == "-3"
+    assert str(riz.evaluate("1/3-1/2")) == "-1/6"
+    assert str(riz.evaluate("5-2-1")) == "2"
+    assert str(riz.evaluate("1-1/2")) == "1/2"
+
+
 def test_operator_precedence():
     riz = Runtime()
     assert str(riz.evaluate("1+1/2")) == "3/2"
