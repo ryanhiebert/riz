@@ -1,6 +1,6 @@
 """The Riz runtime."""
 
-from .eval import eval
+from .eval import RizDivisionByZeroError, eval
 from .integer import Integer
 from .lex import lex
 from .parse import RizParseError, parse
@@ -99,3 +99,15 @@ def test_unary_minus():
     assert str(riz.evaluate("-2-3")) == "-5"  # (-2)-3, not -(2-3)
     assert str(riz.evaluate("2--3")) == "5"  # 2-(-3)
     assert str(riz.evaluate("--3")) == "3"  # double negation
+
+
+def test_division_by_zero():
+    riz = Runtime()
+    assert str(riz.evaluate("0/5")) == "0"  # zero numerator is fine
+    for bad in ("1/0", "5/0", "1/(2-2)", "3/0/4"):
+        try:
+            _ = riz.evaluate(bad)
+        except RizDivisionByZeroError:
+            pass
+        else:
+            raise AssertionError(f"{bad!r} should raise RizDivisionByZeroError")

@@ -5,6 +5,9 @@ from .parse import Add, Divide, Expr, IntLiteral, Multiply, Negate, Subtract
 from .rational import Rational
 
 
+class RizDivisionByZeroError(Exception): ...
+
+
 def eval(node: Expr) -> Integer | Rational:
     match node:
         case IntLiteral(value):
@@ -57,6 +60,8 @@ def _multiply(left: Integer | Rational, right: Integer | Rational) -> Integer | 
 def _divide(left: Integer | Rational, right: Integer | Rational) -> Rational:
     # int / int -> rational; any operand widens int -> rational losslessly first
     a, b = _widen(left), _widen(right)
+    if b.numerator == 0:
+        raise RizDivisionByZeroError("Division by zero.")
     return Rational(a.numerator * b.denominator, a.denominator * b.numerator)
 
 
