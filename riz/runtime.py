@@ -114,3 +114,22 @@ def test_division_by_zero():
         result = riz.evaluate(bad)
         assert isinstance(result, Err)
         assert isinstance(result.error, RizDivisionByZeroError)
+
+
+def test_parse_errors():
+    riz = Runtime()
+    # Each is malformed differently; all must come back as a RizParseError.
+    for bad in (
+        "",  # empty input
+        "+",  # operator with no operands
+        "1+",  # binary operator missing its right operand
+        "*2",  # binary operator missing its left operand
+        "2 3",  # two expressions, no operator between them
+        "(",  # nothing inside an unclosed group
+        "(2+3",  # unclosed group
+        ")",  # stray close paren
+        "2)",  # trailing close paren
+    ):
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
+        assert isinstance(result.error, RizParseError)
