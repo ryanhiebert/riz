@@ -37,6 +37,22 @@ class RightParenthesisToken: ...
 
 
 @dataclass(frozen=True)
+class LessThanToken: ...
+
+
+@dataclass(frozen=True)
+class GreaterThanToken: ...
+
+
+@dataclass(frozen=True)
+class LessOrEqualToken: ...
+
+
+@dataclass(frozen=True)
+class GreaterOrEqualToken: ...
+
+
+@dataclass(frozen=True)
 class IdentifierToken:
     name: str
 
@@ -54,6 +70,10 @@ Token = (
     | StarToken
     | LeftParenthesisToken
     | RightParenthesisToken
+    | LessThanToken
+    | GreaterThanToken
+    | LessOrEqualToken
+    | GreaterOrEqualToken
     | IdentifierToken
     | UnknownToken
 )
@@ -86,6 +106,20 @@ def lex(source: str) -> list[Token]:
         elif char == ")":
             tokens.append(RightParenthesisToken())
             position += 1
+        elif char == "<":
+            if source[position + 1 : position + 2] == "=":
+                tokens.append(LessOrEqualToken())
+                position += 2
+            else:
+                tokens.append(LessThanToken())
+                position += 1
+        elif char == ">":
+            if source[position + 1 : position + 2] == "=":
+                tokens.append(GreaterOrEqualToken())
+                position += 2
+            else:
+                tokens.append(GreaterThanToken())
+                position += 1
         elif char.isalpha():
             start = position
             while position < len(source) and source[position].isalnum():

@@ -10,7 +10,11 @@ from .parse import (
     BoolLiteral,
     Divide,
     Expr,
+    GreaterOrEqual,
+    GreaterThan,
     IntLiteral,
+    LessOrEqual,
+    LessThan,
     Multiply,
     Negate,
     Subtract,
@@ -42,6 +46,14 @@ def eval(node: Expr) -> Result[Value]:
             return _binary(eval(left), eval(right), _multiply)
         case Divide(left, right):
             return _binary(eval(left), eval(right), _divide)
+        case LessThan(left, right):
+            return _binary(eval(left), eval(right), _less_than)
+        case GreaterThan(left, right):
+            return _binary(eval(left), eval(right), _greater_than)
+        case LessOrEqual(left, right):
+            return _binary(eval(left), eval(right), _less_or_equal)
+        case GreaterOrEqual(left, right):
+            return _binary(eval(left), eval(right), _greater_or_equal)
 
 
 def _unary(
@@ -114,6 +126,33 @@ def _divide(left: Numeric, right: Numeric) -> Result[Value]:
     if b.numerator == 0:
         return Err(RizDivisionByZeroError())
     return Ok(Ratio(a.numerator * b.denominator, a.denominator * b.numerator))
+
+
+def _ordering(left: Numeric, right: Numeric) -> tuple[int, int]:
+    # Compare as fractions by cross-multiplying; denominators are positive, so
+    # the inequality direction is preserved.
+    a, b = _widen(left), _widen(right)
+    return a.numerator * b.denominator, b.numerator * a.denominator
+
+
+def _less_than(left: Numeric, right: Numeric) -> Result[Value]:
+    lhs, rhs = _ordering(left, right)
+    return Ok(Boolean(lhs < rhs))
+
+
+def _greater_than(left: Numeric, right: Numeric) -> Result[Value]:
+    lhs, rhs = _ordering(left, right)
+    return Ok(Boolean(lhs > rhs))
+
+
+def _less_or_equal(left: Numeric, right: Numeric) -> Result[Value]:
+    lhs, rhs = _ordering(left, right)
+    return Ok(Boolean(lhs <= rhs))
+
+
+def _greater_or_equal(left: Numeric, right: Numeric) -> Result[Value]:
+    lhs, rhs = _ordering(left, right)
+    return Ok(Boolean(lhs >= rhs))
 
 
 def _widen(value: Numeric) -> Ratio:

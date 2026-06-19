@@ -4,9 +4,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .lex import (
+    GreaterOrEqualToken,
+    GreaterThanToken,
     IdentifierToken,
     IntegerToken,
     LeftParenthesisToken,
+    LessOrEqualToken,
+    LessThanToken,
     MinusToken,
     PlusToken,
     RightParenthesisToken,
@@ -60,21 +64,63 @@ class Divide:
     right: Expr
 
 
-Expr = IntLiteral | BoolLiteral | Negate | Add | Subtract | Multiply | Divide
+@dataclass(frozen=True)
+class LessThan:
+    left: Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class GreaterThan:
+    left: Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class LessOrEqual:
+    left: Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class GreaterOrEqual:
+    left: Expr
+    right: Expr
+
+
+Expr = (
+    IntLiteral
+    | BoolLiteral
+    | Negate
+    | Add
+    | Subtract
+    | Multiply
+    | Divide
+    | LessThan
+    | GreaterThan
+    | LessOrEqual
+    | GreaterOrEqual
+)
 
 
 # Infix operators: token type -> (binding power, AST constructor).
 # Higher binding power binds tighter; all are left-associative.
+# Binding powers start at 1; 0 is the floor passed to `expression` to parse a
+# full expression (so every real operator binds tighter than "parse anything").
 _INFIX: dict[type[Token], tuple[int, Callable[[Expr, Expr], Expr]]] = {
-    PlusToken: (1, Add),
-    MinusToken: (1, Subtract),
-    StarToken: (2, Multiply),
-    SlashToken: (2, Divide),
+    LessThanToken: (1, LessThan),
+    GreaterThanToken: (1, GreaterThan),
+    LessOrEqualToken: (1, LessOrEqual),
+    GreaterOrEqualToken: (1, GreaterOrEqual),
+    PlusToken: (2, Add),
+    MinusToken: (2, Subtract),
+    StarToken: (3, Multiply),
+    SlashToken: (3, Divide),
 }
 
 # Prefix `-` (negation) binds tighter than any binary operator, so `-2*3`
 # is `(-2)*3` and `-2-3` is `(-2)-3`.
-_PREFIX_BP = 3
+_PREFIX_BP = 4
 
 
 class _Parser:

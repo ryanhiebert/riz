@@ -14,7 +14,11 @@ from .parse import (
     BoolLiteral,
     Divide,
     Expr,
+    GreaterOrEqual,
+    GreaterThan,
     IntLiteral,
+    LessOrEqual,
+    LessThan,
     Multiply,
     Negate,
     Subtract,
@@ -46,6 +50,13 @@ def check(node: Expr) -> Result[Type]:
             | Divide(left, right)
         ):
             return _numeric(check(left), check(right))
+        case (
+            LessThan(left, right)
+            | GreaterThan(left, right)
+            | LessOrEqual(left, right)
+            | GreaterOrEqual(left, right)
+        ):
+            return _comparison(check(left), check(right))
 
 
 def _numeric(*operands: Result[Type]) -> Result[Type]:
@@ -56,3 +67,13 @@ def _numeric(*operands: Result[Type]) -> Result[Type]:
         if operand.value is not Type.NUMBER:
             return Err(RizTypeError())
     return Ok(Type.NUMBER)
+
+
+def _comparison(*operands: Result[Type]) -> Result[Type]:
+    """Ordering operands must be NUMBER (for now); the result is BOOLEAN."""
+    for operand in operands:
+        if isinstance(operand, Err):
+            return operand
+        if operand.value is not Type.NUMBER:
+            return Err(RizTypeError())
+    return Ok(Type.BOOLEAN)

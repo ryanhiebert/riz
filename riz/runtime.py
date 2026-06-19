@@ -147,10 +147,35 @@ def test_bool_literals():
     assert _rendered(riz.evaluate("False")) == "False"
 
 
+def test_comparisons():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("2<3")) == "True"
+    assert _rendered(riz.evaluate("3<2")) == "False"
+    assert _rendered(riz.evaluate("2<2")) == "False"
+    assert _rendered(riz.evaluate("2<=2")) == "True"
+    assert _rendered(riz.evaluate("3>2")) == "True"
+    assert _rendered(riz.evaluate("2>=3")) == "False"
+    assert _rendered(riz.evaluate("1/2 < 2/3")) == "True"  # rationals
+    assert _rendered(riz.evaluate("1+1 < 3")) == "True"  # arithmetic binds tighter
+    assert _rendered(riz.evaluate("1 < 2+3")) == "True"
+    assert _rendered(riz.evaluate("-1 < 1")) == "True"
+
+
 def test_type_errors():
     riz = Runtime()
-    # Booleans in arithmetic are rejected by the checker, before eval.
-    for bad in ("True+1", "1+False", "-True", "True/2", "False*3", "(True)+1"):
+    # Booleans in arithmetic, and chained comparisons, are rejected by the
+    # checker before eval. `1<2<3` is `(1<2)<3` = `Bool < Int`.
+    for bad in (
+        "True+1",
+        "1+False",
+        "-True",
+        "True/2",
+        "False*3",
+        "(True)+1",
+        "True<2",
+        "2<True",
+        "1<2<3",
+    ):
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
         assert isinstance(result.error, RizTypeError)
