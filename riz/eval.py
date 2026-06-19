@@ -15,11 +15,11 @@ from .parse import (
     Negate,
     Subtract,
 )
-from .rational import Rational
+from .ratio import Ratio
 from .result import Err, Ok, Result
 
-type Value = Integer | Rational | Boolean
-type Numeric = Integer | Rational
+type Value = Integer | Ratio | Boolean
+type Numeric = Integer | Ratio
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ def _number(value: Value) -> Numeric:
 def _negate(value: Numeric) -> Result[Value]:
     if isinstance(value, Integer):
         return Ok(Integer(-value.value))
-    return Ok(Rational(-value.numerator, value.denominator))
+    return Ok(Ratio(-value.numerator, value.denominator))
 
 
 def _add(left: Numeric, right: Numeric) -> Result[Value]:
@@ -83,7 +83,7 @@ def _add(left: Numeric, right: Numeric) -> Result[Value]:
         return Ok(Integer(left.value + right.value))
     a, b = _widen(left), _widen(right)
     return Ok(
-        Rational(
+        Ratio(
             a.numerator * b.denominator + b.numerator * a.denominator,
             a.denominator * b.denominator,
         )
@@ -95,7 +95,7 @@ def _subtract(left: Numeric, right: Numeric) -> Result[Value]:
         return Ok(Integer(left.value - right.value))
     a, b = _widen(left), _widen(right)
     return Ok(
-        Rational(
+        Ratio(
             a.numerator * b.denominator - b.numerator * a.denominator,
             a.denominator * b.denominator,
         )
@@ -106,17 +106,17 @@ def _multiply(left: Numeric, right: Numeric) -> Result[Value]:
     if isinstance(left, Integer) and isinstance(right, Integer):
         return Ok(Integer(left.value * right.value))
     a, b = _widen(left), _widen(right)
-    return Ok(Rational(a.numerator * b.numerator, a.denominator * b.denominator))
+    return Ok(Ratio(a.numerator * b.numerator, a.denominator * b.denominator))
 
 
 def _divide(left: Numeric, right: Numeric) -> Result[Value]:
     a, b = _widen(left), _widen(right)
     if b.numerator == 0:
         return Err(RizDivisionByZeroError())
-    return Ok(Rational(a.numerator * b.denominator, a.denominator * b.numerator))
+    return Ok(Ratio(a.numerator * b.denominator, a.denominator * b.numerator))
 
 
-def _widen(value: Numeric) -> Rational:
+def _widen(value: Numeric) -> Ratio:
     if isinstance(value, Integer):
-        return Rational(value.value, 1)
+        return Ratio(value.value, 1)
     return value

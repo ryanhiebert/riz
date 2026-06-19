@@ -3,7 +3,7 @@
 Runs between parse and eval. For now the only rule is that arithmetic operands
 must be numbers, so `True + 1` is a *type* error caught here — not at eval (Riz
 never enforces a type rule at runtime). The lattice is intentionally coarse
-(Number vs Boolean); it gains Int-vs-Rational precision when something needs it.
+(Number vs Boolean); it gains Integer-vs-Ratio precision when something needs it.
 """
 
 from dataclasses import dataclass

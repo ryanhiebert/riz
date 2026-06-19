@@ -4,7 +4,7 @@ from typing import override
 
 
 @dataclass(frozen=True)
-class Rational:
+class Ratio:
     numerator: int
     denominator: int
 
