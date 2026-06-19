@@ -161,10 +161,23 @@ def test_comparisons():
     assert _rendered(riz.evaluate("-1 < 1")) == "True"
 
 
+def test_equality():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("1==1")) == "True"
+    assert _rendered(riz.evaluate("1==2")) == "False"
+    assert _rendered(riz.evaluate("1!=2")) == "True"
+    assert _rendered(riz.evaluate("6/4 == 3/2")) == "True"  # equal rationals
+    assert _rendered(riz.evaluate("6/3 == 2")) == "True"  # ratio equals integer
+    assert _rendered(riz.evaluate("True == True")) == "True"
+    assert _rendered(riz.evaluate("True != False")) == "True"
+    assert _rendered(riz.evaluate("(1<2) == (3<4)")) == "True"  # compare two bools
+    assert _rendered(riz.evaluate("1<2 == False")) == "False"  # (1<2) == False; == looser
+
+
 def test_type_errors():
     riz = Runtime()
-    # Booleans in arithmetic, and chained comparisons, are rejected by the
-    # checker before eval. `1<2<3` is `(1<2)<3` = `Bool < Int`.
+    # Booleans in arithmetic, chained comparisons, and cross-type equality are
+    # rejected by the checker before eval. `1<2<3` is `(1<2)<3` = `Bool < Int`.
     for bad in (
         "True+1",
         "1+False",
@@ -175,6 +188,9 @@ def test_type_errors():
         "True<2",
         "2<True",
         "1<2<3",
+        "1==True",  # cross-type equality: Number vs Boolean
+        "True==1",
+        "1==2==3",  # (1==2)==3 = Bool == Int
     ):
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"

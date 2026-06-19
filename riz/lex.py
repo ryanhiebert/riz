@@ -53,6 +53,14 @@ class GreaterOrEqualToken: ...
 
 
 @dataclass(frozen=True)
+class EqualToken: ...
+
+
+@dataclass(frozen=True)
+class NotEqualToken: ...
+
+
+@dataclass(frozen=True)
 class IdentifierToken:
     name: str
 
@@ -74,6 +82,8 @@ Token = (
     | GreaterThanToken
     | LessOrEqualToken
     | GreaterOrEqualToken
+    | EqualToken
+    | NotEqualToken
     | IdentifierToken
     | UnknownToken
 )
@@ -119,6 +129,20 @@ def lex(source: str) -> list[Token]:
                 position += 2
             else:
                 tokens.append(GreaterThanToken())
+                position += 1
+        elif char == "=":
+            if source[position + 1 : position + 2] == "=":
+                tokens.append(EqualToken())
+                position += 2
+            else:
+                tokens.append(UnknownToken(char))  # no bare '=' yet
+                position += 1
+        elif char == "!":
+            if source[position + 1 : position + 2] == "=":
+                tokens.append(NotEqualToken())
+                position += 2
+            else:
+                tokens.append(UnknownToken(char))  # no bare '!' yet
                 position += 1
         elif char.isalpha():
             start = position

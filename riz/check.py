@@ -13,6 +13,7 @@ from .parse import (
     Add,
     BoolLiteral,
     Divide,
+    Equal,
     Expr,
     GreaterOrEqual,
     GreaterThan,
@@ -21,6 +22,7 @@ from .parse import (
     LessThan,
     Multiply,
     Negate,
+    NotEqual,
     Subtract,
 )
 from .result import Err, Ok, Result
@@ -57,6 +59,8 @@ def check(node: Expr) -> Result[Type]:
             | GreaterOrEqual(left, right)
         ):
             return _comparison(check(left), check(right))
+        case Equal(left, right) | NotEqual(left, right):
+            return _equality(check(left), check(right))
 
 
 def _numeric(*operands: Result[Type]) -> Result[Type]:
@@ -76,4 +80,15 @@ def _comparison(*operands: Result[Type]) -> Result[Type]:
             return operand
         if operand.value is not Type.NUMBER:
             return Err(RizTypeError())
+    return Ok(Type.BOOLEAN)
+
+
+def _equality(left: Result[Type], right: Result[Type]) -> Result[Type]:
+    """Equality operands must be the *same* type (Eq); the result is BOOLEAN."""
+    if isinstance(left, Err):
+        return left
+    if isinstance(right, Err):
+        return right
+    if left.value is not right.value:
+        return Err(RizTypeError())
     return Ok(Type.BOOLEAN)

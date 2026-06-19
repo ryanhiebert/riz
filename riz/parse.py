@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .lex import (
+    EqualToken,
     GreaterOrEqualToken,
     GreaterThanToken,
     IdentifierToken,
@@ -12,6 +13,7 @@ from .lex import (
     LessOrEqualToken,
     LessThanToken,
     MinusToken,
+    NotEqualToken,
     PlusToken,
     RightParenthesisToken,
     SlashToken,
@@ -88,6 +90,18 @@ class GreaterOrEqual:
     right: Expr
 
 
+@dataclass(frozen=True)
+class Equal:
+    left: Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class NotEqual:
+    left: Expr
+    right: Expr
+
+
 Expr = (
     IntLiteral
     | BoolLiteral
@@ -100,6 +114,8 @@ Expr = (
     | GreaterThan
     | LessOrEqual
     | GreaterOrEqual
+    | Equal
+    | NotEqual
 )
 
 
@@ -108,19 +124,21 @@ Expr = (
 # Binding powers start at 1; 0 is the floor passed to `expression` to parse a
 # full expression (so every real operator binds tighter than "parse anything").
 _INFIX: dict[type[Token], tuple[int, Callable[[Expr, Expr], Expr]]] = {
-    LessThanToken: (1, LessThan),
-    GreaterThanToken: (1, GreaterThan),
-    LessOrEqualToken: (1, LessOrEqual),
-    GreaterOrEqualToken: (1, GreaterOrEqual),
-    PlusToken: (2, Add),
-    MinusToken: (2, Subtract),
-    StarToken: (3, Multiply),
-    SlashToken: (3, Divide),
+    EqualToken: (1, Equal),
+    NotEqualToken: (1, NotEqual),
+    LessThanToken: (2, LessThan),
+    GreaterThanToken: (2, GreaterThan),
+    LessOrEqualToken: (2, LessOrEqual),
+    GreaterOrEqualToken: (2, GreaterOrEqual),
+    PlusToken: (3, Add),
+    MinusToken: (3, Subtract),
+    StarToken: (4, Multiply),
+    SlashToken: (4, Divide),
 }
 
 # Prefix `-` (negation) binds tighter than any binary operator, so `-2*3`
 # is `(-2)*3` and `-2-3` is `(-2)-3`.
-_PREFIX_BP = 4
+_PREFIX_BP = 5
 
 
 class _Parser:
