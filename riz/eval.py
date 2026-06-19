@@ -7,6 +7,7 @@ from .boolean import Boolean
 from .integer import Integer
 from .parse import (
     Add,
+    And,
     BoolLiteral,
     Divide,
     Equal,
@@ -18,7 +19,9 @@ from .parse import (
     LessThan,
     Multiply,
     Negate,
+    Not,
     NotEqual,
+    Or,
     Subtract,
 )
 from .ratio import Ratio
@@ -60,6 +63,12 @@ def eval(node: Expr) -> Result[Value]:
             return _binary_value(eval(left), eval(right), _equal)
         case NotEqual(left, right):
             return _binary_value(eval(left), eval(right), _not_equal)
+        case And(left, right):
+            return _binary_value(eval(left), eval(right), _and)
+        case Or(left, right):
+            return _binary_value(eval(left), eval(right), _or)
+        case Not(operand):
+            return _unary_value(eval(operand), _logical_not)
 
 
 def _unary(
@@ -93,6 +102,14 @@ def _binary_value(
     if isinstance(right, Err):
         return right
     return op(left.value, right.value)
+
+
+def _unary_value(
+    operand: Result[Value], op: Callable[[Value], Result[Value]]
+) -> Result[Value]:
+    if isinstance(operand, Err):
+        return operand
+    return op(operand.value)
 
 
 def _number(value: Value) -> Numeric:
@@ -190,6 +207,35 @@ def _equals(left: Value, right: Value) -> bool:
     # both numeric: equal iff equal as fractions
     a, b = _widen(left), _widen(right)
     return a.numerator * b.denominator == b.numerator * a.denominator
+
+
+def _and(left: Value, right: Value) -> Result[Value]:
+    # Eager (no short-circuit). Logical on booleans, bitwise on integers.
+    if isinstance(left, Boolean) and isinstance(right, Boolean):
+        return Ok(Boolean(left.value and right.value))
+    if isinstance(left, Integer) and isinstance(right, Integer):
+        return Ok(Integer(left.value & right.value))
+    raise AssertionError("type checker should reject & on these operand types")
+
+
+def _or(left: Value, right: Value) -> Result[Value]:
+    if isinstance(left, Boolean) and isinstance(right, Boolean):
+        return Ok(Boolean(left.value or right.value))
+    if isinstance(left, Integer) and isinstance(right, Integer):
+        return Ok(Integer(left.value | right.value))
+    raise AssertionError("type checker should reject | on these operand types")
+
+
+def _logical_not(value: Value) -> Result[Value]:
+    return Ok(Boolean(not _truth(value)))
+
+
+def _truth(value: Value) -> bool:
+    # The type checker guarantees &&/||/! operands are boolean; a non-boolean
+    # here is a checker bug, not a user error.
+    if isinstance(value, Boolean):
+        return value.value
+    raise AssertionError("type checker should reject non-boolean in &&/||/!")
 
 
 def _widen(value: Numeric) -> Ratio:

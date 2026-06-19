@@ -174,10 +174,45 @@ def test_equality():
     assert _rendered(riz.evaluate("1<2 == False")) == "False"  # (1<2) == False; == looser
 
 
+def test_boolean_operators():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("True & False")) == "False"
+    assert _rendered(riz.evaluate("True & True")) == "True"
+    assert _rendered(riz.evaluate("False | True")) == "True"
+    assert _rendered(riz.evaluate("False | False")) == "False"
+    assert _rendered(riz.evaluate("!True")) == "False"
+    assert _rendered(riz.evaluate("!False")) == "True"
+    assert _rendered(riz.evaluate("!(1 < 2)")) == "False"
+    assert _rendered(riz.evaluate("1<2 & 3<4")) == "True"  # comparisons bind tighter
+    assert _rendered(riz.evaluate("1<2 | 5<4")) == "True"
+    assert _rendered(riz.evaluate("!True == False")) == "True"  # (!True) == False
+    # & binds tighter than |: `True | False & False` = `True | (False & False)`
+    assert _rendered(riz.evaluate("True | False & False")) == "True"
+
+
+def test_boolean_operators_are_eager():
+    riz = Runtime()
+    # No short-circuit (deliberately, for now): both operands always evaluate,
+    # so a div-by-zero on either side surfaces regardless of the other.
+    for bad in ("True | 1/0 == 1", "False & 1/0 == 1"):
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err)
+        assert isinstance(result.error, RizDivisionByZeroError)
+
+
+def test_bitwise():
+    riz = Runtime()
+    # On integers, & and | are bitwise (logical on booleans).
+    assert _rendered(riz.evaluate("6 & 3")) == "2"  # 0b110 & 0b011 = 0b010
+    assert _rendered(riz.evaluate("5 | 2")) == "7"  # 0b101 | 0b010 = 0b111
+    assert _rendered(riz.evaluate("12 & 10")) == "8"
+    assert _rendered(riz.evaluate("1 | 0")) == "1"
+
+
 def test_type_errors():
     riz = Runtime()
-    # Booleans in arithmetic, chained comparisons, and cross-type equality are
-    # rejected by the checker before eval. `1<2<3` is `(1<2)<3` = `Bool < Int`.
+    # Booleans in arithmetic, chained comparisons, cross-type equality, and
+    # non-booleans in &&/||/! are rejected by the checker before eval.
     for bad in (
         "True+1",
         "1+False",
@@ -191,6 +226,11 @@ def test_type_errors():
         "1==True",  # cross-type equality: Number vs Boolean
         "True==1",
         "1==2==3",  # (1==2)==3 = Bool == Int
+        "True & 1",  # & mixing boolean and integer
+        "1 | True",
+        "1/2 & 1",  # bitwise & needs integers, not a ratio
+        "1/2 | 1/3",
+        "!1",  # non-boolean in !
     ):
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .lex import (
+    AndToken,
     EqualToken,
     GreaterOrEqualToken,
     GreaterThanToken,
@@ -14,6 +15,8 @@ from .lex import (
     LessThanToken,
     MinusToken,
     NotEqualToken,
+    NotToken,
+    OrToken,
     PlusToken,
     RightParenthesisToken,
     SlashToken,
@@ -102,10 +105,28 @@ class NotEqual:
     right: Expr
 
 
+@dataclass(frozen=True)
+class And:
+    left: Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Or:
+    left: Expr
+    right: Expr
+
+
+@dataclass(frozen=True)
+class Not:
+    operand: Expr
+
+
 Expr = (
     IntLiteral
     | BoolLiteral
     | Negate
+    | Not
     | Add
     | Subtract
     | Multiply
@@ -116,6 +137,8 @@ Expr = (
     | GreaterOrEqual
     | Equal
     | NotEqual
+    | And
+    | Or
 )
 
 
@@ -124,21 +147,23 @@ Expr = (
 # Binding powers start at 1; 0 is the floor passed to `expression` to parse a
 # full expression (so every real operator binds tighter than "parse anything").
 _INFIX: dict[type[Token], tuple[int, Callable[[Expr, Expr], Expr]]] = {
-    EqualToken: (1, Equal),
-    NotEqualToken: (1, NotEqual),
-    LessThanToken: (2, LessThan),
-    GreaterThanToken: (2, GreaterThan),
-    LessOrEqualToken: (2, LessOrEqual),
-    GreaterOrEqualToken: (2, GreaterOrEqual),
-    PlusToken: (3, Add),
-    MinusToken: (3, Subtract),
-    StarToken: (4, Multiply),
-    SlashToken: (4, Divide),
+    OrToken: (1, Or),
+    AndToken: (2, And),
+    EqualToken: (3, Equal),
+    NotEqualToken: (3, NotEqual),
+    LessThanToken: (4, LessThan),
+    GreaterThanToken: (4, GreaterThan),
+    LessOrEqualToken: (4, LessOrEqual),
+    GreaterOrEqualToken: (4, GreaterOrEqual),
+    PlusToken: (5, Add),
+    MinusToken: (5, Subtract),
+    StarToken: (6, Multiply),
+    SlashToken: (6, Divide),
 }
 
-# Prefix `-` (negation) binds tighter than any binary operator, so `-2*3`
-# is `(-2)*3` and `-2-3` is `(-2)-3`.
-_PREFIX_BP = 5
+# Prefix operators `-` (negate) and `!` (not) bind tighter than any binary
+# operator, so `-2*3` is `(-2)*3` and `!a == b` is `(!a) == b`.
+_PREFIX_BP = 7
 
 
 class _Parser:
@@ -198,6 +223,12 @@ class _Parser:
             if isinstance(operand, Err):
                 return operand
             return Ok(Negate(operand.value))
+        if isinstance(token, NotToken):
+            self.position += 1
+            operand = self.expression(_PREFIX_BP)
+            if isinstance(operand, Err):
+                return operand
+            return Ok(Not(operand.value))
         return Err(RizParseError())
 
 
