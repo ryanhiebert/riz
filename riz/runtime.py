@@ -1,5 +1,6 @@
 """The Riz runtime."""
 
+from .check import RizTypeError, check
 from .eval import RizDivisionByZeroError, Value, eval
 from .lex import lex
 from .parse import RizParseError, parse
@@ -12,6 +13,9 @@ class Runtime:
         parsed = parse(lex(source))
         if isinstance(parsed, Err):
             return parsed
+        checked = check(parsed.value)
+        if isinstance(checked, Err):
+            return checked
         return eval(parsed.value)
 
 
@@ -129,7 +133,24 @@ def test_parse_errors():
         "(2+3",  # unclosed group
         ")",  # stray close paren
         "2)",  # trailing close paren
+        "foo",  # unknown identifier (no variables yet)
+        "true",  # lowercase: not a keyword (literals are True/False)
     ):
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
         assert isinstance(result.error, RizParseError)
+
+
+def test_bool_literals():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("True")) == "True"
+    assert _rendered(riz.evaluate("False")) == "False"
+
+
+def test_type_errors():
+    riz = Runtime()
+    # Booleans in arithmetic are rejected by the checker, before eval.
+    for bad in ("True+1", "1+False", "-True", "True/2", "False*3", "(True)+1"):
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
+        assert isinstance(result.error, RizTypeError)

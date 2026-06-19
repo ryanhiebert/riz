@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .lex import (
+    IdentifierToken,
     IntegerToken,
     LeftParenthesisToken,
     MinusToken,
@@ -23,6 +24,11 @@ class RizParseError: ...
 @dataclass(frozen=True)
 class IntLiteral:
     value: int
+
+
+@dataclass(frozen=True)
+class BoolLiteral:
+    value: bool
 
 
 @dataclass(frozen=True)
@@ -54,7 +60,7 @@ class Divide:
     right: Expr
 
 
-Expr = IntLiteral | Negate | Add | Subtract | Multiply | Divide
+Expr = IntLiteral | BoolLiteral | Negate | Add | Subtract | Multiply | Divide
 
 
 # Infix operators: token type -> (binding power, AST constructor).
@@ -106,6 +112,13 @@ class _Parser:
         if isinstance(token, IntegerToken):
             self.position += 1
             return Ok(IntLiteral(token.value))
+        if isinstance(token, IdentifierToken):
+            self.position += 1
+            if token.name == "True":
+                return Ok(BoolLiteral(True))
+            if token.name == "False":
+                return Ok(BoolLiteral(False))
+            return Err(RizParseError())  # unknown identifier (no variables yet)
         if isinstance(token, LeftParenthesisToken):
             self.position += 1
             inner = self.expression(0)

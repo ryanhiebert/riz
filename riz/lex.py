@@ -37,6 +37,11 @@ class RightParenthesisToken: ...
 
 
 @dataclass(frozen=True)
+class IdentifierToken:
+    name: str
+
+
+@dataclass(frozen=True)
 class UnknownToken:
     char: str
 
@@ -49,6 +54,7 @@ Token = (
     | StarToken
     | LeftParenthesisToken
     | RightParenthesisToken
+    | IdentifierToken
     | UnknownToken
 )
 
@@ -80,6 +86,11 @@ def lex(source: str) -> list[Token]:
         elif char == ")":
             tokens.append(RightParenthesisToken())
             position += 1
+        elif char.isalpha():
+            start = position
+            while position < len(source) and source[position].isalnum():
+                position += 1
+            tokens.append(IdentifierToken(source[start:position]))
         elif char.isdecimal():
             start = position
             while position < len(source) and source[position].isdecimal():
