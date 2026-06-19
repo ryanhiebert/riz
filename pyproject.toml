@@ -6,6 +6,16 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = []
 
+[project.scripts]
+riz = "riz.repl:repl"
+
+[build-system]
+requires = ["uv_build>=0.10,<0.11"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""  # package lives at ./riz, not ./src/riz
+
 [dependency-groups]
 dev = [
     "basedpyright>=1.39.8",
