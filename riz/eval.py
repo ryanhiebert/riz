@@ -8,6 +8,8 @@ from .integer import Integer
 from .parse import (
     Add,
     And,
+    Bind,
+    Binding,
     BoolLiteral,
     Divide,
     Equal,
@@ -23,11 +25,13 @@ from .parse import (
     NotEqual,
     Or,
     Subtract,
+    Variable,
 )
 from .ratio import Ratio
 from .result import Err, Ok, Result
+from .unit import Unit
 
-type Value = Integer | Ratio | Boolean
+type Value = Integer | Ratio | Boolean | Unit
 type Numeric = Integer | Ratio
 
 
@@ -35,40 +39,50 @@ type Numeric = Integer | Ratio
 class RizDivisionByZeroError: ...
 
 
-def eval(node: Expr) -> Result[Value]:
+def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
     match node:
+        case Binding(Bind(name), value):
+            evaluated = eval(value, env)
+            if isinstance(evaluated, Err):
+                return evaluated  # a failed binding leaves the name untouched
+            env[name] = evaluated.value
+            return Ok(Unit())
+        case Variable(name):
+            if name not in env:
+                raise AssertionError("type checker should reject unbound names")
+            return Ok(env[name])
         case IntLiteral(value):
             return Ok(Integer(value))
         case BoolLiteral(value):
             return Ok(Boolean(value))
         case Negate(operand):
-            return _unary(eval(operand), _negate)
+            return _unary(eval(operand, env), _negate)
         case Add(left, right):
-            return _binary(eval(left), eval(right), _add)
+            return _binary(eval(left, env), eval(right, env), _add)
         case Subtract(left, right):
-            return _binary(eval(left), eval(right), _subtract)
+            return _binary(eval(left, env), eval(right, env), _subtract)
         case Multiply(left, right):
-            return _binary(eval(left), eval(right), _multiply)
+            return _binary(eval(left, env), eval(right, env), _multiply)
         case Divide(left, right):
-            return _binary(eval(left), eval(right), _divide)
+            return _binary(eval(left, env), eval(right, env), _divide)
         case LessThan(left, right):
-            return _binary(eval(left), eval(right), _less_than)
+            return _binary(eval(left, env), eval(right, env), _less_than)
         case GreaterThan(left, right):
-            return _binary(eval(left), eval(right), _greater_than)
+            return _binary(eval(left, env), eval(right, env), _greater_than)
         case LessOrEqual(left, right):
-            return _binary(eval(left), eval(right), _less_or_equal)
+            return _binary(eval(left, env), eval(right, env), _less_or_equal)
         case GreaterOrEqual(left, right):
-            return _binary(eval(left), eval(right), _greater_or_equal)
+            return _binary(eval(left, env), eval(right, env), _greater_or_equal)
         case Equal(left, right):
-            return _binary_value(eval(left), eval(right), _equal)
+            return _binary_value(eval(left, env), eval(right, env), _equal)
         case NotEqual(left, right):
-            return _binary_value(eval(left), eval(right), _not_equal)
+            return _binary_value(eval(left, env), eval(right, env), _not_equal)
         case And(left, right):
-            return _binary_value(eval(left), eval(right), _and)
+            return _binary_value(eval(left, env), eval(right, env), _and)
         case Or(left, right):
-            return _binary_value(eval(left), eval(right), _or)
+            return _binary_value(eval(left, env), eval(right, env), _or)
         case Not(operand):
-            return _unary_value(eval(operand), _logical_not)
+            return _unary_value(eval(operand, env), _logical_not)
 
 
 def _unary(
@@ -113,11 +127,11 @@ def _unary_value(
 
 
 def _number(value: Value) -> Numeric:
-    # The type checker rejects booleans in arithmetic before eval runs, so one
+    # The type checker rejects non-numbers in arithmetic before eval runs, so one
     # reaching here is a checker bug, not a user error — hence a hard failure.
-    if isinstance(value, Boolean):
-        raise AssertionError("type checker should reject booleans in arithmetic")
-    return value
+    if isinstance(value, (Integer, Ratio)):
+        return value
+    raise AssertionError("type checker should reject non-numbers in arithmetic")
 
 
 def _negate(value: Numeric) -> Result[Value]:
@@ -205,7 +219,7 @@ def _equals(left: Value, right: Value) -> bool:
     if isinstance(left, Boolean) or isinstance(right, Boolean):
         raise AssertionError("type checker should reject == across number and boolean")
     # both numeric: equal iff equal as fractions
-    a, b = _widen(left), _widen(right)
+    a, b = _widen(_number(left)), _widen(_number(right))
     return a.numerator * b.denominator == b.numerator * a.denominator
 
 

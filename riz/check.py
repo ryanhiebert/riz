@@ -12,6 +12,8 @@ from enum import Enum, auto
 from .parse import (
     Add,
     And,
+    Bind,
+    Binding,
     BoolLiteral,
     Divide,
     Equal,
@@ -27,6 +29,7 @@ from .parse import (
     NotEqual,
     Or,
     Subtract,
+    Variable,
 )
 from .result import Err, Ok, Result
 
@@ -35,40 +38,58 @@ from .result import Err, Ok, Result
 class RizTypeError: ...
 
 
+@dataclass(frozen=True)
+class RizNameError: ...
+
+
 class Type(Enum):
     INTEGER = auto()
     RATIONAL = auto()
     BOOLEAN = auto()
+    UNIT = auto()
 
 
 _NUMERIC = (Type.INTEGER, Type.RATIONAL)
 
 
-def check(node: Expr) -> Result[Type]:
+def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
     match node:
+        case Binding(Bind(name), value):
+            # Infer the value's type, record it for the name, yield UNIT. The
+            # name isn't in scope for its own right-hand side (`=` is
+            # non-recursive), so `value` is checked against the current env.
+            inferred = check(value, env)
+            if isinstance(inferred, Err):
+                return inferred
+            env[name] = inferred.value
+            return Ok(Type.UNIT)
+        case Variable(name):
+            if name not in env:
+                return Err(RizNameError())
+            return Ok(env[name])
         case IntLiteral():
             return Ok(Type.INTEGER)
         case BoolLiteral():
             return Ok(Type.BOOLEAN)
         case Negate(operand):
-            return _numeric_unary(check(operand))
+            return _numeric_unary(check(operand, env))
         case Add(left, right) | Subtract(left, right) | Multiply(left, right):
-            return _arithmetic(check(left), check(right))
+            return _arithmetic(check(left, env), check(right, env))
         case Divide(left, right):
-            return _division(check(left), check(right))
+            return _division(check(left, env), check(right, env))
         case (
             LessThan(left, right)
             | GreaterThan(left, right)
             | LessOrEqual(left, right)
             | GreaterOrEqual(left, right)
         ):
-            return _ordering(check(left), check(right))
+            return _ordering(check(left, env), check(right, env))
         case Equal(left, right) | NotEqual(left, right):
-            return _equality(check(left), check(right))
+            return _equality(check(left, env), check(right, env))
         case Not(operand):
-            return _logical_unary(check(operand))
+            return _logical_unary(check(operand, env))
         case And(left, right) | Or(left, right):
-            return _and_or(check(left), check(right))
+            return _and_or(check(left, env), check(right, env))
 
 
 def _number(operand: Result[Type]) -> Type | Err:

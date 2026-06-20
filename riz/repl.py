@@ -9,16 +9,20 @@ Run it with `python -m riz` (or `python -m riz.repl`).
 
 from .result import Err, Ok
 from .runtime import Runtime
+from .unit import Unit
 
 
 def render(source: str, runtime: Runtime) -> str | None:
     """Render one line of input: the value, or a friendly error.
 
-    Returns `None` for blank input — there's nothing to echo.
+    Returns `None` when there's nothing to echo — blank input, or a binding
+    (which evaluates to `Unit`).
     """
     if not source.strip():
         return None
     match runtime.evaluate(source):
+        case Ok(Unit()):
+            return None
         case Ok(value):
             return str(value)
         case Err(error):
@@ -61,6 +65,13 @@ def test_render_error():
     assert render("1/0", runtime) == "error: RizDivisionByZeroError"
     assert render("1+", runtime) == "error: RizParseError"
     assert render("True+1", runtime) == "error: RizTypeError"
+    assert render("nope", runtime) == "error: RizNameError"
+
+
+def test_render_binding_is_silent_then_usable():
+    runtime = Runtime()
+    assert render("x = 6/4", runtime) is None  # a binding echoes nothing
+    assert render("x + x", runtime) == "3"  # ...but the name carries across calls
 
 
 if __name__ == "__main__":

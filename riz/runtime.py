@@ -1,6 +1,6 @@
 """The Riz runtime."""
 
-from .check import RizTypeError, check
+from .check import RizNameError, RizTypeError, Type, check
 from .eval import RizDivisionByZeroError, Value, eval
 from .lex import lex
 from .parse import RizParseError, parse
@@ -8,15 +8,30 @@ from .result import Err, Ok, Result
 
 
 class Runtime:
+    def __init__(self):
+        # Bindings persist across calls (one REPL session). Two parallel envs:
+        # the checker's name -> Type and the evaluator's name -> Value.
+        self._types: dict[str, Type] = {}
+        self._values: dict[str, Value] = {}
+
     def evaluate(self, source: str) -> Result[Value]:
         # Whole pipeline is Result-valued: no program error ever raises here.
         parsed = parse(lex(source))
         if isinstance(parsed, Err):
             return parsed
-        checked = check(parsed.value)
+        # Check and evaluate against copies, committing both only if the whole
+        # statement succeeds — a binding that fails partway leaves no trace.
+        types = dict(self._types)
+        checked = check(parsed.value, types)
         if isinstance(checked, Err):
             return checked
-        return eval(parsed.value)
+        values = dict(self._values)
+        evaluated = eval(parsed.value, values)
+        if isinstance(evaluated, Err):
+            return evaluated
+        self._types = types
+        self._values = values
+        return evaluated
 
 
 def _rendered(result: Result[Value]) -> str:
@@ -133,8 +148,8 @@ def test_parse_errors():
         "(2+3",  # unclosed group
         ")",  # stray close paren
         "2)",  # trailing close paren
-        "foo",  # unknown identifier (no variables yet)
-        "true",  # lowercase: not a keyword (literals are True/False)
+        "1 = 2",  # a non-name on the left of a binding
+        "x = = 3",  # nothing to bind on the right
     ):
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
@@ -235,3 +250,63 @@ def test_type_errors():
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
         assert isinstance(result.error, RizTypeError)
+
+
+def test_variables():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("x = 6/4")) == "()"  # a binding evaluates to Unit
+    assert _rendered(riz.evaluate("x")) == "3/2"  # ...and persists across calls
+    assert _rendered(riz.evaluate("x + x")) == "3"  # 3/1, a whole ratio, shows as 3
+    assert _rendered(riz.evaluate("x * 2")) == "3"
+
+
+def test_rebinding():
+    riz = Runtime()
+    _ = riz.evaluate("n = 5")
+    _ = riz.evaluate("n = n + 1")  # '=' is non-recursive: the right side sees old n
+    assert _rendered(riz.evaluate("n")) == "6"
+    _ = riz.evaluate("n = True")  # names rebind freely, even to a different type
+    assert _rendered(riz.evaluate("n")) == "True"
+    assert _rendered(riz.evaluate("n & False")) == "False"  # now typed as a boolean
+
+
+def test_assignment_is_an_expression():
+    riz = Runtime()
+    # A binding nests: it evaluates to Unit, which can flow into another binding.
+    assert _rendered(riz.evaluate("y = (x = 5)")) == "()"
+    assert _rendered(riz.evaluate("x")) == "5"
+    assert _rendered(riz.evaluate("y")) == "()"  # y holds the Unit from (x = 5)
+    # Chained, right-associative: `a = (b = 7)`, so a holds Unit and b holds 7.
+    assert _rendered(riz.evaluate("a = b = 7")) == "()"
+    assert _rendered(riz.evaluate("b")) == "7"
+    assert _rendered(riz.evaluate("a")) == "()"
+
+
+def test_unit_in_arithmetic_is_a_type_error():
+    riz = Runtime()
+    # Nesting is policed by the checker, not the grammar: Unit isn't a number.
+    for bad in ("1 + (x = 5)", "(x = 5) * 2", "-(x = 5)"):
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
+        assert isinstance(result.error, RizTypeError)
+
+
+def test_name_errors():
+    riz = Runtime()
+    # A name that was never bound is a name error, caught by the checker.
+    for bad in ("foo", "true", "x + 1", "1 + y"):
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
+        assert isinstance(result.error, RizNameError)
+
+
+def test_failed_binding_leaves_no_trace():
+    riz = Runtime()
+    # The right side fails to evaluate, so the binding must not commit: a later
+    # reference to the name is still a name error, not a crash.
+    result = riz.evaluate("x = 1/0")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizDivisionByZeroError)
+    after = riz.evaluate("x")
+    assert isinstance(after, Err)
+    assert isinstance(after.error, RizNameError)

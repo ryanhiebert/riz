@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .lex import (
     AndToken,
+    EqualsToken,
     EqualToken,
     GreaterOrEqualToken,
     GreaterThanToken,
@@ -38,6 +39,11 @@ class IntLiteral:
 @dataclass(frozen=True)
 class BoolLiteral:
     value: bool
+
+
+@dataclass(frozen=True)
+class Variable:
+    name: str
 
 
 @dataclass(frozen=True)
@@ -122,9 +128,33 @@ class Not:
     operand: Expr
 
 
+# A binding's left-hand side is a *pattern*, not a bare name — the seam that
+# grows tuple/wildcard/nested variants once destructuring lands. Today the only
+# variant is `Bind`, an identifier pattern.
+@dataclass(frozen=True)
+class Bind:
+    name: str
+
+
+Pattern = Bind
+
+
+# Assignment is an *expression* that evaluates to `Unit` (riz is
+# expression-oriented), so `Binding` lives in `Expr` and nests freely — misuse
+# like `1 + (x = 5)` is left for the type checker (Int + Unit), not the grammar.
+# `=` is non-recursive: its right side is parsed in the surrounding scope, so a
+# name still holds its old value there (which is what makes `n = n + 1` work).
+@dataclass(frozen=True)
+class Binding:
+    target: Pattern
+    value: Expr
+
+
 Expr = (
     IntLiteral
     | BoolLiteral
+    | Variable
+    | Binding
     | Negate
     | Not
     | Add
@@ -165,6 +195,11 @@ _INFIX: dict[type[Token], tuple[int, Callable[[Expr, Expr], Expr]]] = {
 # operator, so `-2*3` is `(-2)*3` and `!a == b` is `(!a) == b`.
 _PREFIX_BP = 7
 
+# Assignment `=` is the loosest operator of all — looser than every `_INFIX`
+# entry (which start at 1) — and right-associative, so `a = b = c` groups as
+# `a = (b = c)`. Its already-parsed left side is reinterpreted as a pattern.
+_ASSIGN_BP = 0
+
 
 class _Parser:
     def __init__(self, tokens: list[Token]):
@@ -183,6 +218,19 @@ class _Parser:
             return left
         node = left.value
         while (token := self.peek()) is not None:
+            if isinstance(token, EqualsToken):
+                if _ASSIGN_BP < min_bp:
+                    break
+                self.position += 1
+                target = self._as_pattern(node)
+                if isinstance(target, Err):
+                    return target
+                # Right-associative: parse the RHS at the same binding power.
+                right = self.expression(_ASSIGN_BP)
+                if isinstance(right, Err):
+                    return right
+                node = Binding(target.value, right.value)
+                continue
             infix = _INFIX.get(type(token))
             if infix is None:
                 break
@@ -207,7 +255,7 @@ class _Parser:
                 return Ok(BoolLiteral(True))
             if token.name == "False":
                 return Ok(BoolLiteral(False))
-            return Err(RizParseError())  # unknown identifier (no variables yet)
+            return Ok(Variable(token.name))
         if isinstance(token, LeftParenthesisToken):
             self.position += 1
             inner = self.expression(0)
@@ -229,6 +277,13 @@ class _Parser:
             if isinstance(operand, Err):
                 return operand
             return Ok(Not(operand.value))
+        return Err(RizParseError())
+
+
+    def _as_pattern(self, expr: Expr) -> Result[Pattern]:
+        # Only a bare name is a legal binding target today; `1 = 2` etc. fail.
+        if isinstance(expr, Variable):
+            return Ok(Bind(expr.name))
         return Err(RizParseError())
 
 

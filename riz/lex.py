@@ -57,6 +57,10 @@ class EqualToken: ...
 
 
 @dataclass(frozen=True)
+class EqualsToken: ...  # a single '=', the binding operator (vs '==' equality)
+
+
+@dataclass(frozen=True)
 class NotEqualToken: ...
 
 
@@ -95,6 +99,7 @@ Token = (
     | LessOrEqualToken
     | GreaterOrEqualToken
     | EqualToken
+    | EqualsToken
     | NotEqualToken
     | AndToken
     | OrToken
@@ -150,7 +155,7 @@ def lex(source: str) -> list[Token]:
                 tokens.append(EqualToken())
                 position += 2
             else:
-                tokens.append(UnknownToken(char))  # no bare '=' yet
+                tokens.append(EqualsToken())  # bare '=' binds a name
                 position += 1
         elif char == "!":
             if source[position + 1 : position + 2] == "=":
