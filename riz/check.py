@@ -31,6 +31,7 @@ from .parse import (
     Or,
     Subtract,
     Variable,
+    WhileLoop,
 )
 from .result import Err, Ok, Result
 
@@ -76,6 +77,35 @@ def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
                 check(consequent, dict(env)),
                 check(alternative, dict(env)),
             )
+        case WhileLoop(condition, body):
+            # The body may run 0+ times, so each pre-existing name's type after
+            # the loop is the JOIN of its entry type and its type after the body,
+            # iterated to a fixpoint — a widening rebind like `n = n / 3`
+            # (Int → Rational) must be reflected. An *incompatible* join (e.g.
+            # Int vs Bool) is a type error: statically we can't know whether the
+            # loop ran. The condition is re-checked as the env widens, so it must
+            # stay BOOLEAN at every reachable type-state. (New names bound in the
+            # body stay body-local — they vanish with each `trial` copy.)
+            while True:
+                cond = check(condition, env)
+                if isinstance(cond, Err):
+                    return cond
+                if cond.value is not Type.BOOLEAN:
+                    return Err(RizTypeError())
+                trial = dict(env)
+                body_type = check(body, trial)
+                if isinstance(body_type, Err):
+                    return body_type
+                widened = False
+                for name in list(env):
+                    joined = _join_types(env[name], trial[name])
+                    if joined is None:
+                        return Err(RizTypeError())
+                    if joined is not env[name]:
+                        env[name] = joined
+                        widened = True
+                if not widened:
+                    return Ok(Type.UNIT)
         case IntLiteral():
             return Ok(Type.INTEGER)
         case BoolLiteral():
@@ -101,16 +131,25 @@ def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
             return _and_or(check(left, env), check(right, env))
 
 
+def _join_types(a: Type, b: Type) -> Type | None:
+    """Join two types under the widening lattice: two numbers widen (Int/Int →
+    Int, else Rational); identical types join to themselves; otherwise there is
+    no join — the types are incompatible (`None`)."""
+    if a in _NUMERIC and b in _NUMERIC:
+        if a is Type.INTEGER and b is Type.INTEGER:
+            return Type.INTEGER
+        return Type.RATIONAL
+    if a is b:
+        return a
+    return None
+
+
 def _conditional(
     condition: Result[Type], consequent: Result[Type], alternative: Result[Type]
 ) -> Result[Type]:
-    """`if c: a else: b`: condition BOOLEAN; the branches meet under the coercion
-    law — two numbers widen (Int/Int → Int, else Rational), exactly like
-    arithmetic; otherwise they must be the same type. Result is that join type.
-
-    Unions of genuinely different types (e.g. Int vs Bool) are still rejected —
-    that's deferred along with control-flow joins.
-    """
+    """`if c: a else: b`: condition BOOLEAN; the branches join under the coercion
+    law (numbers widen, else they must be the same type) → the join type. No join
+    (e.g. Int vs Bool) is a type error."""
     if isinstance(condition, Err):
         return condition
     if isinstance(consequent, Err):
@@ -119,14 +158,10 @@ def _conditional(
         return alternative
     if condition.value is not Type.BOOLEAN:
         return Err(RizTypeError())
-    a, b = consequent.value, alternative.value
-    if a in _NUMERIC and b in _NUMERIC:
-        if a is Type.INTEGER and b is Type.INTEGER:
-            return Ok(Type.INTEGER)
-        return Ok(Type.RATIONAL)
-    if a is b:
-        return Ok(a)
-    return Err(RizTypeError())
+    joined = _join_types(consequent.value, alternative.value)
+    if joined is None:
+        return Err(RizTypeError())
+    return Ok(joined)
 
 
 def _number(operand: Result[Type]) -> Type | Err:

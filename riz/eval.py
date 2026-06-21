@@ -27,6 +27,7 @@ from .parse import (
     Or,
     Subtract,
     Variable,
+    WhileLoop,
 )
 from .ratio import Ratio
 from .result import Err, Ok, Result
@@ -60,6 +61,18 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             # like div-by-zero, never fire). Branches get their own env scope.
             branch = consequent if _truth(evaluated.value) else alternative
             return eval(branch, dict(env))
+        case WhileLoop(condition, body):
+            # The body runs in the shared env, so a rebind like `n = n * 2`
+            # persists and the next condition check sees it (loop progresses).
+            while True:
+                tested = eval(condition, env)
+                if isinstance(tested, Err):
+                    return tested
+                if not _truth(tested.value):
+                    return Ok(Unit())
+                ran = eval(body, env)
+                if isinstance(ran, Err):
+                    return ran
         case IntLiteral(value):
             return Ok(Integer(value))
         case BoolLiteral(value):

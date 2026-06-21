@@ -139,6 +139,14 @@ class Conditional:
     alternative: Expr
 
 
+# A loop `while c: body` — an expression of type Unit; the body runs for effect
+# (its value is discarded) while the condition holds.
+@dataclass(frozen=True)
+class WhileLoop:
+    condition: Expr
+    body: Expr
+
+
 # A binding's left-hand side is a *pattern*, not a bare name — the seam that
 # grows tuple/wildcard/nested variants once destructuring lands. Today the only
 # variant is `Bind`, an identifier pattern.
@@ -167,6 +175,7 @@ Expr = (
     | Variable
     | Binding
     | Conditional
+    | WhileLoop
     | Negate
     | Not
     | Add
@@ -269,6 +278,8 @@ class _Parser:
                 return Ok(BoolLiteral(False))
             if token.name == "if":
                 return self._conditional()
+            if token.name == "while":
+                return self._while()
             if token.name == "else":
                 return Err(RizParseError())  # 'else' with no matching 'if'
             return Ok(Variable(token.name))
@@ -320,6 +331,20 @@ class _Parser:
         if isinstance(alternative, Err):
             return alternative
         return Ok(Conditional(condition.value, consequent.value, alternative.value))
+
+    def _while(self) -> Result[Expr]:
+        # `while` already consumed. Parse `<cond> : <body>` (single-expression
+        # body for now; multi-statement bodies await the block-syntax decision).
+        condition = self.expression(0)
+        if isinstance(condition, Err):
+            return condition
+        if not isinstance(self.peek(), ColonToken):
+            return Err(RizParseError())
+        self.position += 1
+        body = self.expression(0)
+        if isinstance(body, Err):
+            return body
+        return Ok(WhileLoop(condition.value, body.value))
 
     def _as_pattern(self, expr: Expr) -> Result[Pattern]:
         # Only a bare name is a legal binding target today; `1 = 2` etc. fail.

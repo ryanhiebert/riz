@@ -153,6 +153,8 @@ def test_parse_errors():
         "if True 1 else 2",  # conditional missing its colons
         "if True: 1",  # conditional missing its else branch
         "else: 1",  # 'else' with no matching 'if'
+        "while True 5",  # while missing its colon
+        "while True:",  # while missing its body
     ):
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
@@ -330,6 +332,48 @@ def test_conditional_type_errors():
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
         assert isinstance(result.error, RizTypeError)
+
+
+def test_while():
+    riz = Runtime()
+    _ = riz.evaluate("n = 1")
+    # The body rebinds the loop counter in the enclosing scope, so it progresses.
+    assert _rendered(riz.evaluate("while n < 100: n = n * 2")) == "()"  # loop is Unit
+    assert _rendered(riz.evaluate("n")) == "128"
+    # A loop whose condition starts false never runs and leaves state untouched.
+    _ = riz.evaluate("m = 5")
+    _ = riz.evaluate("while m > 10: m = m + 1")
+    assert _rendered(riz.evaluate("m")) == "5"
+
+
+def test_while_type_errors():
+    riz = Runtime()
+    result = riz.evaluate("while 1: 2")  # non-boolean condition
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)
+
+
+def test_while_widens_the_loop_variable_type():
+    riz = Runtime()
+    _ = riz.evaluate("n = 1")
+    _ = riz.evaluate("while n > 1/100: n = n / 3")  # body rebinds n to Rational
+    assert _rendered(riz.evaluate("n")) == "1/243"
+    # The loop may have run, so n's type after is the join of Int (0 runs) and
+    # Rational (≥1 run) = Rational. A bitwise op is now a clean type error, not
+    # the host crash it used to be.
+    result = riz.evaluate("n & 1")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)
+
+
+def test_while_incompatible_rebind_is_a_type_error():
+    riz = Runtime()
+    _ = riz.evaluate("n = 5")
+    # The body would change n from Int to Bool. The loop might not run, so n's
+    # type can't be known at runtime — reject it rather than infer a union.
+    result = riz.evaluate("while n > 0: n = True")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)
 
 
 def test_name_errors():
