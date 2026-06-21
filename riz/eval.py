@@ -11,6 +11,7 @@ from .parse import (
     Bind,
     Binding,
     BoolLiteral,
+    Conditional,
     Divide,
     Equal,
     Expr,
@@ -51,6 +52,14 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             if name not in env:
                 raise AssertionError("type checker should reject unbound names")
             return Ok(env[name])
+        case Conditional(condition, consequent, alternative):
+            evaluated = eval(condition, env)
+            if isinstance(evaluated, Err):
+                return evaluated
+            # Lazy: only the selected branch runs (so the dead branch's errors,
+            # like div-by-zero, never fire). Branches get their own env scope.
+            branch = consequent if _truth(evaluated.value) else alternative
+            return eval(branch, dict(env))
         case IntLiteral(value):
             return Ok(Integer(value))
         case BoolLiteral(value):

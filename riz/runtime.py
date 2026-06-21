@@ -150,6 +150,9 @@ def test_parse_errors():
         "2)",  # trailing close paren
         "1 = 2",  # a non-name on the left of a binding
         "x = = 3",  # nothing to bind on the right
+        "if True 1 else 2",  # conditional missing its colons
+        "if True: 1",  # conditional missing its else branch
+        "else: 1",  # 'else' with no matching 'if'
     ):
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
@@ -286,6 +289,44 @@ def test_unit_in_arithmetic_is_a_type_error():
     riz = Runtime()
     # Nesting is policed by the checker, not the grammar: Unit isn't a number.
     for bad in ("1 + (x = 5)", "(x = 5) * 2", "-(x = 5)"):
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
+        assert isinstance(result.error, RizTypeError)
+
+
+def test_conditional():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("if True: 1 else: 2")) == "1"
+    assert _rendered(riz.evaluate("if False: 1 else: 2")) == "2"
+    assert _rendered(riz.evaluate("if 1 < 2: 10 else: 20")) == "10"
+    _ = riz.evaluate("x = 5")
+    assert _rendered(riz.evaluate("if x < 10: x else: 0")) == "5"  # reads a binding
+    # Nests; the inner `else` binds greedily.
+    assert _rendered(riz.evaluate("if False: 1 else: if True: 2 else: 3")) == "2"
+    # It's an expression — usable as a sub-expression and as a binding's value.
+    assert _rendered(riz.evaluate("10 + if True: 1 else: 2")) == "11"
+    _ = riz.evaluate("y = if True: 7 else: 8")
+    assert _rendered(riz.evaluate("y")) == "7"
+    # Branches meet under the coercion law — Int widens to Ratio, like arithmetic.
+    assert _rendered(riz.evaluate("if True: 5/3 else: 7")) == "5/3"
+    assert _rendered(riz.evaluate("if False: 5/3 else: 7")) == "7"
+    assert _rendered(riz.evaluate("(if False: 5/3 else: 7) + 1/3")) == "22/3"
+
+
+def test_conditional_is_lazy():
+    riz = Runtime()
+    # Only the taken branch evaluates, so the dead branch's div-by-zero is never
+    # reached (both branches are Rational, to satisfy the same-type rule).
+    assert _rendered(riz.evaluate("if True: 1/1 else: 1/0")) == "1"
+    assert _rendered(riz.evaluate("if False: 1/0 else: 2/1")) == "2"
+
+
+def test_conditional_type_errors():
+    riz = Runtime()
+    for bad in (
+        "if 1: 2 else: 3",  # non-boolean condition
+        "if True: 1 else: True",  # branches disagree: Int vs Bool, no widening
+    ):
         result = riz.evaluate(bad)
         assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
         assert isinstance(result.error, RizTypeError)

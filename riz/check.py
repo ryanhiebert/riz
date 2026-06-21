@@ -15,6 +15,7 @@ from .parse import (
     Bind,
     Binding,
     BoolLiteral,
+    Conditional,
     Divide,
     Equal,
     Expr,
@@ -67,6 +68,14 @@ def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
             if name not in env:
                 return Err(RizNameError())
             return Ok(env[name])
+        case Conditional(condition, consequent, alternative):
+            # Branches get their own env copy, so a binding inside one doesn't
+            # escape into the surrounding scope (nor does its type).
+            return _conditional(
+                check(condition, env),
+                check(consequent, dict(env)),
+                check(alternative, dict(env)),
+            )
         case IntLiteral():
             return Ok(Type.INTEGER)
         case BoolLiteral():
@@ -90,6 +99,34 @@ def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
             return _logical_unary(check(operand, env))
         case And(left, right) | Or(left, right):
             return _and_or(check(left, env), check(right, env))
+
+
+def _conditional(
+    condition: Result[Type], consequent: Result[Type], alternative: Result[Type]
+) -> Result[Type]:
+    """`if c: a else: b`: condition BOOLEAN; the branches meet under the coercion
+    law — two numbers widen (Int/Int → Int, else Rational), exactly like
+    arithmetic; otherwise they must be the same type. Result is that join type.
+
+    Unions of genuinely different types (e.g. Int vs Bool) are still rejected —
+    that's deferred along with control-flow joins.
+    """
+    if isinstance(condition, Err):
+        return condition
+    if isinstance(consequent, Err):
+        return consequent
+    if isinstance(alternative, Err):
+        return alternative
+    if condition.value is not Type.BOOLEAN:
+        return Err(RizTypeError())
+    a, b = consequent.value, alternative.value
+    if a in _NUMERIC and b in _NUMERIC:
+        if a is Type.INTEGER and b is Type.INTEGER:
+            return Ok(Type.INTEGER)
+        return Ok(Type.RATIONAL)
+    if a is b:
+        return Ok(a)
+    return Err(RizTypeError())
 
 
 def _number(operand: Result[Type]) -> Type | Err:

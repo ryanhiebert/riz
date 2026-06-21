@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .lex import (
     AndToken,
+    ColonToken,
     EqualsToken,
     EqualToken,
     GreaterOrEqualToken,
@@ -128,6 +129,16 @@ class Not:
     operand: Expr
 
 
+# A conditional `if c: a else: b` — an expression yielding the taken branch's
+# value. Both branches must share a type (the checker's rule); eval runs only
+# the branch the condition selects.
+@dataclass(frozen=True)
+class Conditional:
+    condition: Expr
+    consequent: Expr
+    alternative: Expr
+
+
 # A binding's left-hand side is a *pattern*, not a bare name — the seam that
 # grows tuple/wildcard/nested variants once destructuring lands. Today the only
 # variant is `Bind`, an identifier pattern.
@@ -155,6 +166,7 @@ Expr = (
     | BoolLiteral
     | Variable
     | Binding
+    | Conditional
     | Negate
     | Not
     | Add
@@ -255,6 +267,10 @@ class _Parser:
                 return Ok(BoolLiteral(True))
             if token.name == "False":
                 return Ok(BoolLiteral(False))
+            if token.name == "if":
+                return self._conditional()
+            if token.name == "else":
+                return Err(RizParseError())  # 'else' with no matching 'if'
             return Ok(Variable(token.name))
         if isinstance(token, LeftParenthesisToken):
             self.position += 1
@@ -279,6 +295,31 @@ class _Parser:
             return Ok(Not(operand.value))
         return Err(RizParseError())
 
+
+    def _conditional(self) -> Result[Expr]:
+        # `if` already consumed. Parse `<cond> : <consequent> else : <alt>`.
+        # Each part is a full expression; the condition stops at the `:` (which
+        # isn't an operator), and the consequent stops at the `else` keyword.
+        condition = self.expression(0)
+        if isinstance(condition, Err):
+            return condition
+        if not isinstance(self.peek(), ColonToken):
+            return Err(RizParseError())
+        self.position += 1
+        consequent = self.expression(0)
+        if isinstance(consequent, Err):
+            return consequent
+        keyword = self.peek()
+        if not (isinstance(keyword, IdentifierToken) and keyword.name == "else"):
+            return Err(RizParseError())
+        self.position += 1
+        if not isinstance(self.peek(), ColonToken):
+            return Err(RizParseError())
+        self.position += 1
+        alternative = self.expression(0)
+        if isinstance(alternative, Err):
+            return alternative
+        return Ok(Conditional(condition.value, consequent.value, alternative.value))
 
     def _as_pattern(self, expr: Expr) -> Result[Pattern]:
         # Only a bare name is a legal binding target today; `1 = 2` etc. fail.

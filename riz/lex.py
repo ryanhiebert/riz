@@ -61,6 +61,10 @@ class EqualsToken: ...  # a single '=', the binding operator (vs '==' equality)
 
 
 @dataclass(frozen=True)
+class ColonToken: ...  # separates a conditional's parts: `if c: a else: b`
+
+
+@dataclass(frozen=True)
 class NotEqualToken: ...
 
 
@@ -100,6 +104,7 @@ Token = (
     | GreaterOrEqualToken
     | EqualToken
     | EqualsToken
+    | ColonToken
     | NotEqualToken
     | AndToken
     | OrToken
@@ -164,6 +169,9 @@ def lex(source: str) -> list[Token]:
             else:
                 tokens.append(NotToken())
                 position += 1
+        elif char == ":":
+            tokens.append(ColonToken())
+            position += 1
         elif char == "&":
             tokens.append(AndToken())
             position += 1
