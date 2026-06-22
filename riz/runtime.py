@@ -387,6 +387,44 @@ def test_sequencing():
     assert _rendered(riz.evaluate("b")) == "3"
 
 
+def test_conditional_merges_a_modified_variable():
+    riz = Runtime()
+    _ = riz.evaluate("n = 5")
+    # Both branches rebind the pre-existing n; afterward it's the taken value,
+    # typed as the join of the two paths (Int here).
+    _ = riz.evaluate("if n > 0:\n  n = n + 1\nelse:\n  n = n - 1")
+    assert _rendered(riz.evaluate("n")) == "6"
+
+
+def test_conditional_merge_widens():
+    riz = Runtime()
+    _ = riz.evaluate("m = 6")
+    # One branch makes m Rational, the other Int → the merge widens to Rational.
+    _ = riz.evaluate("if m > 0:\n  m = m / 2\nelse:\n  m = m * 2")
+    assert _rendered(riz.evaluate("m")) == "3"  # 6/2, a whole ratio
+
+
+def test_conditional_new_binding_stays_local():
+    riz = Runtime()
+    _ = riz.evaluate("c = True")
+    # `temp` is introduced inside the branches (both of them), but new bindings
+    # don't escape — only pre-existing variables merge.
+    _ = riz.evaluate("if c:\n  temp = 1\nelse:\n  temp = 2")
+    after = riz.evaluate("temp")
+    assert isinstance(after, Err)
+    assert isinstance(after.error, RizNameError)
+
+
+def test_conditional_incompatible_merge_is_a_type_error():
+    riz = Runtime()
+    _ = riz.evaluate("n = 5")
+    # One branch makes n a Bool, the other keeps it Int — no join, so it can't
+    # be known at runtime which: a type error.
+    result = riz.evaluate("if n > 0:\n  n = True\nelse:\n  n = 0")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)
+
+
 def test_while_with_block_body():
     riz = Runtime()
     # The accumulator loop: a multi-statement body updates two variables per

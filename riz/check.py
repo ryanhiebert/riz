@@ -71,13 +71,32 @@ def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
                 return Err(RizNameError())
             return Ok(env[name])
         case Conditional(condition, consequent, alternative):
-            # Branches get their own env copy, so a binding inside one doesn't
-            # escape into the surrounding scope (nor does its type).
-            return _conditional(
-                check(condition, env),
-                check(consequent, dict(env)),
-                check(alternative, dict(env)),
-            )
+            checked = check(condition, env)
+            if isinstance(checked, Err):
+                return checked
+            if checked.value is not Type.BOOLEAN:
+                return Err(RizTypeError())
+            # Each branch is checked in its own copy, so a *new* binding stays
+            # local. A pre-existing variable modified in either branch is then
+            # merged back as the join of its type along the two paths (the φ-merge,
+            # over names that already existed); an incompatible join is an error.
+            then_env, else_env = dict(env), dict(env)
+            consequent_type = check(consequent, then_env)
+            if isinstance(consequent_type, Err):
+                return consequent_type
+            alternative_type = check(alternative, else_env)
+            if isinstance(alternative_type, Err):
+                return alternative_type
+            for name in list(env):
+                merged = _join_types(then_env[name], else_env[name])
+                if merged is None:
+                    return Err(RizTypeError())
+                env[name] = merged
+            # The conditional's own value is the join of the two branches' types.
+            value_type = _join_types(consequent_type.value, alternative_type.value)
+            if value_type is None:
+                return Err(RizTypeError())
+            return Ok(value_type)
         case WhileLoop(condition, body):
             # The body may run 0+ times, so each pre-existing name's type after
             # the loop is the JOIN of its entry type and its type after the body,
@@ -152,26 +171,6 @@ def _join_types(a: Type, b: Type) -> Type | None:
     if a is b:
         return a
     return None
-
-
-def _conditional(
-    condition: Result[Type], consequent: Result[Type], alternative: Result[Type]
-) -> Result[Type]:
-    """`if c: a else: b`: condition BOOLEAN; the branches join under the coercion
-    law (numbers widen, else they must be the same type) → the join type. No join
-    (e.g. Int vs Bool) is a type error."""
-    if isinstance(condition, Err):
-        return condition
-    if isinstance(consequent, Err):
-        return consequent
-    if isinstance(alternative, Err):
-        return alternative
-    if condition.value is not Type.BOOLEAN:
-        return Err(RizTypeError())
-    joined = _join_types(consequent.value, alternative.value)
-    if joined is None:
-        return Err(RizTypeError())
-    return Ok(joined)
 
 
 def _number(operand: Result[Type]) -> Type | Err:

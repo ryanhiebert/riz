@@ -58,10 +58,11 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             evaluated = eval(condition, env)
             if isinstance(evaluated, Err):
                 return evaluated
-            # Lazy: only the selected branch runs (so the dead branch's errors,
-            # like div-by-zero, never fire). Branches get their own env scope.
+            # Lazy: only the taken branch runs (so the dead branch's errors, like
+            # div-by-zero, never fire), in the shared env so its changes to
+            # pre-existing variables persist (new branch vars are type-gated out).
             branch = consequent if _truth(evaluated.value) else alternative
-            return eval(branch, dict(env))
+            return eval(branch, env)
         case WhileLoop(condition, body):
             # The body runs in the shared env, so a rebind like `n = n * 2`
             # persists and the next condition check sees it (loop progresses).
