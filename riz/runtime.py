@@ -110,7 +110,7 @@ def test_parentheses():
 def test_whitespace():
     riz = Runtime()
     assert _rendered(riz.evaluate("2 + 3")) == "5"
-    assert _rendered(riz.evaluate(" 1/2  +  1/3 ")) == "5/6"
+    assert _rendered(riz.evaluate("1/2  +  1/3 ")) == "5/6"  # internal/trailing ws
     assert _rendered(riz.evaluate("(2 + 3) * 4")) == "20"
 
 
@@ -374,6 +374,48 @@ def test_while_incompatible_rebind_is_a_type_error():
     result = riz.evaluate("while n > 0: n = True")
     assert isinstance(result, Err)
     assert isinstance(result.error, RizTypeError)
+
+
+def test_sequencing():
+    riz = Runtime()
+    # A program can be several newline-separated statements; its value is the
+    # last, and earlier bindings are visible to later statements.
+    assert _rendered(riz.evaluate("x = 5\nx + 1")) == "6"
+    assert _rendered(riz.evaluate("a = 2\nb = 3\na * b")) == "6"
+    # Bindings from a multi-statement program persist into the session.
+    assert _rendered(riz.evaluate("a")) == "2"
+    assert _rendered(riz.evaluate("b")) == "3"
+
+
+def test_while_with_block_body():
+    riz = Runtime()
+    # The accumulator loop: a multi-statement body updates two variables per
+    # iteration (impossible with a single-expression body).
+    program = "i = 1\nsum = 0\nwhile i <= 5:\n  sum = sum + i\n  i = i + 1\nsum"
+    assert _rendered(riz.evaluate(program)) == "15"
+
+
+def test_if_with_block_body():
+    riz = Runtime()
+    # A block branch evaluates to its last statement's value.
+    program = "x = 5\nif x > 0:\n  y = 1\n  y + 10\nelse:\n  0"
+    assert _rendered(riz.evaluate(program)) == "11"
+
+
+def test_missing_block_body_is_an_error():
+    riz = Runtime()
+    # `while …:` then a newline with no indent — the block never opens.
+    result = riz.evaluate("x = 1\nwhile x > 5:\ny")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizParseError)
+
+
+def test_unexpected_indent_is_a_parse_error():
+    riz = Runtime()
+    # Top level is column 0; a line that starts indented is an unexpected indent.
+    result = riz.evaluate("  5")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizParseError)
 
 
 def test_name_errors():

@@ -10,6 +10,7 @@ from .parse import (
     And,
     Bind,
     Binding,
+    Block,
     BoolLiteral,
     Conditional,
     Divide,
@@ -73,6 +74,15 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
                 ran = eval(body, env)
                 if isinstance(ran, Err):
                     return ran
+        case Block(statements):
+            # Statements run in order, sharing env so a binding is visible to
+            # later statements; the block's value is its last statement's.
+            result = eval(statements[0], env)
+            for statement in statements[1:]:
+                if isinstance(result, Err):
+                    return result
+                result = eval(statement, env)
+            return result
         case IntLiteral(value):
             return Ok(Integer(value))
         case BoolLiteral(value):

@@ -14,6 +14,7 @@ from .parse import (
     And,
     Bind,
     Binding,
+    Block,
     BoolLiteral,
     Conditional,
     Divide,
@@ -106,6 +107,15 @@ def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
                         widened = True
                 if not widened:
                     return Ok(Type.UNIT)
+        case Block(statements):
+            # Statements checked in order (threading env, so later ones see
+            # earlier bindings); the block's type is its last statement's.
+            result = check(statements[0], env)
+            for statement in statements[1:]:
+                if isinstance(result, Err):
+                    return result
+                result = check(statement, env)
+            return result
         case IntLiteral():
             return Ok(Type.INTEGER)
         case BoolLiteral():

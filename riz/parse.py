@@ -6,16 +6,19 @@ from dataclasses import dataclass
 from .lex import (
     AndToken,
     ColonToken,
+    DedentToken,
     EqualsToken,
     EqualToken,
     GreaterOrEqualToken,
     GreaterThanToken,
     IdentifierToken,
+    IndentToken,
     IntegerToken,
     LeftParenthesisToken,
     LessOrEqualToken,
     LessThanToken,
     MinusToken,
+    NewlineToken,
     NotEqualToken,
     NotToken,
     OrToken,
@@ -147,6 +150,13 @@ class WhileLoop:
     body: Expr
 
 
+# A sequence of statements (newline-separated, or an indented body). It runs them
+# in order and evaluates to the last one's value — the top-level program is one.
+@dataclass(frozen=True)
+class Block:
+    statements: tuple[Expr, ...]
+
+
 # A binding's left-hand side is a *pattern*, not a bare name — the seam that
 # grows tuple/wildcard/nested variants once destructuring lands. Today the only
 # variant is `Bind`, an identifier pattern.
@@ -176,6 +186,7 @@ Expr = (
     | Binding
     | Conditional
     | WhileLoop
+    | Block
     | Negate
     | Not
     | Add
@@ -317,7 +328,7 @@ class _Parser:
         if not isinstance(self.peek(), ColonToken):
             return Err(RizParseError())
         self.position += 1
-        consequent = self.expression(0)
+        consequent = self._body()
         if isinstance(consequent, Err):
             return consequent
         keyword = self.peek()
@@ -327,7 +338,7 @@ class _Parser:
         if not isinstance(self.peek(), ColonToken):
             return Err(RizParseError())
         self.position += 1
-        alternative = self.expression(0)
+        alternative = self._body()
         if isinstance(alternative, Err):
             return alternative
         return Ok(Conditional(condition.value, consequent.value, alternative.value))
@@ -341,10 +352,50 @@ class _Parser:
         if not isinstance(self.peek(), ColonToken):
             return Err(RizParseError())
         self.position += 1
-        body = self.expression(0)
+        body = self._body()
         if isinstance(body, Err):
             return body
         return Ok(WhileLoop(condition.value, body.value))
+
+    def _body(self) -> Result[Expr]:
+        # The body after a `:` — an inline expression on the same line, or an
+        # indented block (NEWLINE, then INDENT…statements…DEDENT).
+        if not isinstance(self.peek(), NewlineToken):
+            return self.expression(0)  # inline body
+        self.position += 1  # consume the NEWLINE
+        if not isinstance(self.peek(), IndentToken):
+            return Err(RizParseError())  # expected an indented block
+        self.position += 1  # consume the INDENT
+        statements = self.statements()
+        if isinstance(statements, Err):
+            return statements
+        if not statements.value or not isinstance(self.peek(), DedentToken):
+            return Err(RizParseError())  # empty or unterminated block
+        self.position += 1  # consume the DEDENT
+        if len(statements.value) == 1:
+            return Ok(statements.value[0])
+        body: Expr = Block(tuple(statements.value))
+        return Ok(body)
+
+    def statements(self) -> Result[list[Expr]]:
+        # Statements until this level ends (a DEDENT, or end of input). They're
+        # separated by NEWLINE — except a block-bodied statement ends with a
+        # DEDENT instead, so it needs no NEWLINE after it.
+        statements: list[Expr] = []
+        while not self.at_end() and not isinstance(self.peek(), DedentToken):
+            statement = self.expression(0)
+            if isinstance(statement, Err):
+                return statement
+            statements.append(statement.value)
+            if isinstance(self.peek(), NewlineToken):
+                self.position += 1  # the separator between statements
+            elif self.at_end() or isinstance(self.peek(), DedentToken):
+                break  # this statement-list ends here
+            elif isinstance(self.tokens[self.position - 1], DedentToken):
+                continue  # the previous statement was a block — no NEWLINE needed
+            else:
+                return Err(RizParseError())  # two statements with no separator
+        return Ok(statements)
 
     def _as_pattern(self, expr: Expr) -> Result[Pattern]:
         # Only a bare name is a legal binding target today; `1 = 2` etc. fail.
@@ -354,10 +405,18 @@ class _Parser:
 
 
 def parse(tokens: list[Token]) -> Result[Expr]:
+    # A program is the top-level statement-list. A lone statement is returned
+    # bare; several become a `Block`. A stray INDENT (unexpected indent) makes
+    # the first statement fail; a stray DEDENT leaves tokens past the at_end check.
     parser = _Parser(tokens)
-    result = parser.expression(0)
-    if isinstance(result, Err):
-        return result
+    statements = parser.statements()
+    if isinstance(statements, Err):
+        return statements
     if not parser.at_end():
         return Err(RizParseError())
-    return result
+    if not statements.value:
+        return Err(RizParseError())  # empty program
+    if len(statements.value) == 1:
+        return Ok(statements.value[0])
+    program: Expr = Block(tuple(statements.value))
+    return Ok(program)
