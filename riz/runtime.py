@@ -530,3 +530,33 @@ def test_a_type_error_in_a_called_body_surfaces():
     result = riz.evaluate("bad(3)")
     assert isinstance(result, Err)
     assert isinstance(result.error, RizTypeError)
+
+
+def test_self_recursion():
+    riz = Runtime()
+    # The classic: factorial calls itself. The return type is seeded from the
+    # base case (Integer) and the recursive branch is checked against it.
+    _ = riz.evaluate("fn factorial(n): if n <= 1: 1 else: n * factorial(n - 1)")
+    assert _rendered(riz.evaluate("factorial(0)")) == "1"
+    assert _rendered(riz.evaluate("factorial(1)")) == "1"
+    assert _rendered(riz.evaluate("factorial(5)")) == "120"
+    assert _rendered(riz.evaluate("factorial(6)")) == "720"
+
+
+def test_recursion_whose_result_widens():
+    riz = Runtime()
+    # The base case is Integer but the recursive branch divides, so the whole
+    # function's return type widens to Rational — the fixpoint must catch that.
+    _ = riz.evaluate("fn shrink(n): if n <= 0: 1 else: shrink(n - 1) / 2")
+    assert _rendered(riz.evaluate("shrink(0)")) == "1"
+    assert _rendered(riz.evaluate("shrink(3)")) == "1/8"  # 1/2/2/2
+
+
+def test_recursion_with_no_base_case_is_a_type_error():
+    riz = Runtime()
+    # Every path recurses, so the return type stays ⊥ — the function can never
+    # return. The checker rejects it instead of letting eval spin forever.
+    _ = riz.evaluate("fn loop(n): loop(n)")
+    result = riz.evaluate("loop(5)")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)

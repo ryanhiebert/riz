@@ -76,10 +76,14 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
                 raise AssertionError("type checker should reject unbound names")
             return Ok(env[name])
         case Function(name, parameters, body):
-            # Capture the env by value (a copy); bind the name to the closure.
-            # The copy is taken *before* the bind, so the name isn't in its own
-            # captured scope — `fn` is non-recursive for now, like `=`.
-            env[name] = Closure(name, parameters, body, dict(env))
+            # Capture the env by value (a copy), then tie the knot: bind the
+            # function's own name to the closure *inside* its captured env, so the
+            # body can call itself (self-recursion). The self-reference is to the
+            # closure value, not the outer slot, so a later rebind of the name
+            # can't change it — value-capture intact.
+            closure = Closure(name, parameters, body, dict(env))
+            closure.env[name] = closure
+            env[name] = closure
             return Ok(Unit())
         case Call(callee, arguments):
             evaluated = eval(callee, env)
