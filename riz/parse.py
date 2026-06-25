@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from .lex import (
     AndToken,
     ColonToken,
+    CommaToken,
     DedentToken,
     EqualsToken,
     EqualToken,
@@ -350,18 +351,27 @@ class _Parser:
         node = base.value
         while isinstance(self.peek(), LeftParenthesisToken):
             self.position += 1
-            argument = self.expression(0)
-            if isinstance(argument, Err):
-                return argument
+            arguments: list[Expr] = []
+            if not isinstance(self.peek(), RightParenthesisToken):  # `f()` is empty
+                while True:
+                    argument = self.expression(0)
+                    if isinstance(argument, Err):
+                        return argument
+                    arguments.append(argument.value)
+                    if isinstance(self.peek(), CommaToken):
+                        self.position += 1
+                        continue
+                    break
             if not isinstance(self.peek(), RightParenthesisToken):
                 return Err(RizParseError())
             self.position += 1
-            node = Call(node, (argument.value,))
+            node = Call(node, tuple(arguments))
         return Ok(node)
 
     def _function(self) -> Result[Expr]:
-        # `fn` already consumed. Parse `<name> ( <param> ) : <body>` — a single
-        # positional parameter for now; the param list is a pattern seam.
+        # `fn` already consumed. Parse `<name> ( <params> ) : <body>` — one or
+        # more comma-separated positional parameters; each is a pattern (today a
+        # bare-name `Bind`). A zero-parameter form awaits the Unit-argument case.
         name = self.peek()
         if not isinstance(name, IdentifierToken):
             return Err(RizParseError())
@@ -369,10 +379,18 @@ class _Parser:
         if not isinstance(self.peek(), LeftParenthesisToken):
             return Err(RizParseError())
         self.position += 1
-        parameter = self.peek()
-        if not isinstance(parameter, IdentifierToken):
-            return Err(RizParseError())
-        self.position += 1
+        parameters: list[Pattern] = []
+        if not isinstance(self.peek(), RightParenthesisToken):  # `fn f():` is empty
+            while True:
+                parameter = self.peek()
+                if not isinstance(parameter, IdentifierToken):
+                    return Err(RizParseError())
+                self.position += 1
+                parameters.append(Bind(parameter.name))
+                if isinstance(self.peek(), CommaToken):
+                    self.position += 1
+                    continue
+                break
         if not isinstance(self.peek(), RightParenthesisToken):
             return Err(RizParseError())
         self.position += 1
@@ -382,7 +400,7 @@ class _Parser:
         body = self._body()
         if isinstance(body, Err):
             return body
-        return Ok(Function(name.name, (Bind(parameter.name),), body.value))
+        return Ok(Function(name.name, tuple(parameters), body.value))
 
     def _conditional(self) -> Result[Expr]:
         # `if` already consumed. Parse `<cond> : <consequent> else : <alt>`.

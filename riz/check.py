@@ -119,14 +119,19 @@ def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
             if isinstance(checked, Err):
                 return checked
             function = checked.value
-            argument = check(arguments[0], env)
-            if isinstance(argument, Err):
-                return argument
+            argument_types: list[RizType] = []
+            for argument in arguments:
+                argument_type = check(argument, env)
+                if isinstance(argument_type, Err):
+                    return argument_type
+                argument_types.append(argument_type.value)
             if isinstance(function, _Pending):
                 return Ok(function.assumed)  # a recursive call: the assumed return
             if not isinstance(function, FunctionType):
                 return Err(RizTypeError())  # only functions are callable
-            return _check_call(function, argument.value)
+            if len(arguments) != len(function.parameters):
+                return Err(RizTypeError())  # wrong number of arguments
+            return _check_call(function, tuple(argument_types))
         case Conditional(condition, consequent, alternative):
             checked = check(condition, env)
             if isinstance(checked, Err):
@@ -217,10 +222,10 @@ def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
             return _and_or(check(left, env), check(right, env))
 
 
-def _check_call(function: FunctionType, argument: RizType) -> Result[RizType]:
-    """Type a call by checking the body with the parameter bound to the
-    argument's type, over the env captured at definition — so the result follows
-    the actual argument. Recursion is a return-type fixpoint: the function's own
+def _check_call(function: FunctionType, arguments: tuple[RizType, ...]) -> Result[RizType]:
+    """Type a call by checking the body with the parameters bound to the
+    arguments' types, over the env captured at definition — so the result follows
+    the actual arguments. Recursion is a return-type fixpoint: the function's own
     name binds to a `_Pending` carrying the current assumed return, seeded at ⊥
     and widened (via the body's joins) until it stabilizes. A result that stays ⊥
     means no base case was reached — the function can never return — so reject it.
@@ -231,7 +236,8 @@ def _check_call(function: FunctionType, argument: RizType) -> Result[RizType]:
     assumed: RizType = BOTTOM
     while True:
         frame = dict(function.captured)
-        frame[function.parameters[0].name] = argument
+        for parameter, argument in zip(function.parameters, arguments):
+            frame[parameter.name] = argument
         frame[function.name] = _Pending(assumed)
         result = check(function.body, frame)
         if isinstance(result, Err):

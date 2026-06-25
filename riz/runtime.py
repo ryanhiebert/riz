@@ -560,3 +560,61 @@ def test_recursion_with_no_base_case_is_a_type_error():
     result = riz.evaluate("loop(5)")
     assert isinstance(result, Err)
     assert isinstance(result.error, RizTypeError)
+
+
+def test_multi_parameter_function():
+    riz = Runtime()
+    _ = riz.evaluate("fn sumsq(a, b): a * a + b * b")
+    assert _rendered(riz.evaluate("sumsq(3, 4)")) == "25"
+    assert _rendered(riz.evaluate("sumsq(1, 1)")) == "2"
+    # Arguments bind positionally; order matters.
+    _ = riz.evaluate("fn diff(a, b): a - b")
+    assert _rendered(riz.evaluate("diff(10, 3)")) == "7"
+    assert _rendered(riz.evaluate("diff(3, 10)")) == "-7"
+
+
+def test_multi_parameter_recursion():
+    riz = Runtime()
+    _ = riz.evaluate("fn power(base, exp): if exp <= 0: 1 else: base * power(base, exp - 1)")
+    assert _rendered(riz.evaluate("power(2, 10)")) == "1024"
+    assert _rendered(riz.evaluate("power(3, 4)")) == "81"
+    # gcd by subtraction — two distinct recursive calls, both two-argument.
+    _ = riz.evaluate(
+        "fn gcd(a, b): if a == b: a else: if a > b: gcd(a - b, b) else: gcd(a, b - a)"
+    )
+    assert _rendered(riz.evaluate("gcd(12, 8)")) == "4"
+    assert _rendered(riz.evaluate("gcd(21, 14)")) == "7"
+
+
+def test_argument_arity_must_match():
+    riz = Runtime()
+    _ = riz.evaluate("fn add(a, b): a + b")
+    for bad in ("add(3)", "add(1, 2, 3)"):  # too few, too many
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
+        assert isinstance(result.error, RizTypeError)
+
+
+def test_snake_case_names():
+    riz = Runtime()
+    _ = riz.evaluate("fn add_one(n): n + 1")
+    assert _rendered(riz.evaluate("add_one(41)")) == "42"
+    _ = riz.evaluate("my_total = 6 * 7")
+    assert _rendered(riz.evaluate("my_total + 1")) == "43"
+
+
+def test_zero_parameter_function():
+    riz = Runtime()
+    _ = riz.evaluate("fn answer(): 6 * 7")
+    assert _rendered(riz.evaluate("answer()")) == "42"
+    # The function value and calling it are different things.
+    assert _rendered(riz.evaluate("answer")) == "<fn answer>"
+    assert _rendered(riz.evaluate("answer() + 1")) == "43"
+
+
+def test_zero_parameter_function_captures_by_value():
+    riz = Runtime()
+    _ = riz.evaluate("k = 100")
+    _ = riz.evaluate("fn get_k(): k + 1")  # captures k = 100
+    _ = riz.evaluate("k = 0")  # a later rebind can't reach the closure
+    assert _rendered(riz.evaluate("get_k()")) == "101"

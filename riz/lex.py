@@ -65,6 +65,10 @@ class ColonToken: ...  # separates a conditional's parts: `if c: a else: b`
 
 
 @dataclass(frozen=True)
+class CommaToken: ...  # separates parameters and arguments: `f(a, b)`
+
+
+@dataclass(frozen=True)
 class NotEqualToken: ...
 
 
@@ -117,6 +121,7 @@ Token = (
     | EqualToken
     | EqualsToken
     | ColonToken
+    | CommaToken
     | NotEqualToken
     | AndToken
     | OrToken
@@ -238,15 +243,20 @@ def lex(source: str) -> list[Token]:
         elif char == ":":
             tokens.append(ColonToken())
             position += 1
+        elif char == ",":
+            tokens.append(CommaToken())
+            position += 1
         elif char == "&":
             tokens.append(AndToken())
             position += 1
         elif char == "|":
             tokens.append(OrToken())
             position += 1
-        elif char.isalpha():
+        elif char.isalpha() or char == "_":
             start = position
-            while position < len(source) and source[position].isalnum():
+            while position < len(source) and (
+                source[position].isalnum() or source[position] == "_"
+            ):
                 position += 1
             tokens.append(IdentifierToken(source[start:position]))
         elif char.isdecimal():
@@ -279,6 +289,13 @@ def test_leading_indent_at_top_level_is_an_unexpected_indent():
         IntegerToken(2),
         DedentToken(),
     ]
+
+
+def test_underscores_in_identifiers():
+    # An identifier may contain (and start with) underscores — snake_case names.
+    assert lex("snake_case") == [IdentifierToken("snake_case")]
+    assert lex("_private") == [IdentifierToken("_private")]
+    assert lex("add_1") == [IdentifierToken("add_1")]
 
 
 def test_newline_separates_top_level_lines():

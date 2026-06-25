@@ -92,12 +92,16 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             closure = evaluated.value
             if not isinstance(closure, Closure):
                 raise AssertionError("type checker should reject calling a non-function")
-            argument = eval(arguments[0], env)
-            if isinstance(argument, Err):
-                return argument
-            # A fresh frame over the captured env, with the parameter bound.
+            values: list[Value] = []
+            for argument in arguments:
+                evaluated_argument = eval(argument, env)
+                if isinstance(evaluated_argument, Err):
+                    return evaluated_argument
+                values.append(evaluated_argument.value)
+            # A fresh frame over the captured env, with the parameters bound.
             frame = dict(closure.env)
-            frame[closure.parameters[0].name] = argument.value
+            for parameter, value in zip(closure.parameters, values):
+                frame[parameter.name] = value
             return eval(closure.body, frame)
         case Conditional(condition, consequent, alternative):
             evaluated = eval(condition, env)
