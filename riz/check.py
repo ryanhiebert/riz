@@ -6,6 +6,8 @@ combinations — `True + 1`, `1/2 & 3`, `1 == True` — as type errors *here*,
 never at eval (Riz doesn't enforce type rules at runtime).
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -16,10 +18,12 @@ from .parse import (
     Binding,
     Block,
     BoolLiteral,
+    Call,
     Conditional,
     Divide,
     Equal,
     Expr,
+    Function,
     GreaterOrEqual,
     GreaterThan,
     IntLiteral,
@@ -52,10 +56,25 @@ class Type(Enum):
     UNIT = auto()
 
 
+# A function's type carries its parameters, its body, and the type-env captured
+# at definition. The body is re-checked against the concrete argument types at
+# each call site, so a function's result type follows its actual arguments
+# (`half(5)` is Rational, `half(6)` whole). The standalone "type this function in
+# isolation" inference — bounds on un-called functions — is the next step.
+@dataclass(frozen=True, eq=False)
+class FunctionType:
+    parameters: tuple[Bind, ...]
+    body: Expr
+    captured: dict[str, RizType]
+
+
+type RizType = Type | FunctionType
+
+
 _NUMERIC = (Type.INTEGER, Type.RATIONAL)
 
 
-def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
+def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
     match node:
         case Binding(Bind(name), value):
             # Infer the value's type, record it for the name, yield UNIT. The
@@ -70,6 +89,29 @@ def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
             if name not in env:
                 return Err(RizNameError())
             return Ok(env[name])
+        case Function(name, parameters, body):
+            # Record the function's type (capturing the env by value, before the
+            # name binds, so `fn` is non-recursive for now) and yield UNIT. The
+            # body isn't checked here — it's checked against concrete arguments
+            # at each call.
+            env[name] = FunctionType(parameters, body, dict(env))
+            return Ok(Type.UNIT)
+        case Call(callee, arguments):
+            checked = check(callee, env)
+            if isinstance(checked, Err):
+                return checked
+            function = checked.value
+            if not isinstance(function, FunctionType):
+                return Err(RizTypeError())  # only functions are callable
+            argument = check(arguments[0], env)
+            if isinstance(argument, Err):
+                return argument
+            # Re-check the body with the parameter bound to the argument's type,
+            # over the env captured at definition — so the result follows the
+            # actual argument type.
+            frame = dict(function.captured)
+            frame[function.parameters[0].name] = argument.value
+            return check(function.body, frame)
         case Conditional(condition, consequent, alternative):
             checked = check(condition, env)
             if isinstance(checked, Err):
@@ -160,11 +202,11 @@ def check(node: Expr, env: dict[str, Type]) -> Result[Type]:
             return _and_or(check(left, env), check(right, env))
 
 
-def _join_types(a: Type, b: Type) -> Type | None:
+def _join_types(a: RizType, b: RizType) -> RizType | None:
     """Join two types under the widening lattice: two numbers widen (Int/Int →
     Int, else Rational); identical types join to themselves; otherwise there is
     no join — the types are incompatible (`None`)."""
-    if a in _NUMERIC and b in _NUMERIC:
+    if isinstance(a, Type) and isinstance(b, Type) and a in _NUMERIC and b in _NUMERIC:
         if a is Type.INTEGER and b is Type.INTEGER:
             return Type.INTEGER
         return Type.RATIONAL
@@ -173,16 +215,17 @@ def _join_types(a: Type, b: Type) -> Type | None:
     return None
 
 
-def _number(operand: Result[Type]) -> Type | Err:
+def _number(operand: Result[RizType]) -> Type | Err:
     """Unwrap a numeric operand's type, or an Err if it isn't numeric."""
     if isinstance(operand, Err):
         return operand
-    if operand.value not in _NUMERIC:
-        return Err(RizTypeError())
-    return operand.value
+    value = operand.value
+    if isinstance(value, Type) and value in _NUMERIC:
+        return value
+    return Err(RizTypeError())
 
 
-def _numbers(left: Result[Type], right: Result[Type]) -> tuple[Type, Type] | Err:
+def _numbers(left: Result[RizType], right: Result[RizType]) -> tuple[Type, Type] | Err:
     a = _number(left)
     if isinstance(a, Err):
         return a
@@ -192,13 +235,13 @@ def _numbers(left: Result[Type], right: Result[Type]) -> tuple[Type, Type] | Err
     return a, b
 
 
-def _numeric_unary(operand: Result[Type]) -> Result[Type]:
+def _numeric_unary(operand: Result[RizType]) -> Result[RizType]:
     """`-`: numeric operand → the same numeric type."""
     a = _number(operand)
     return a if isinstance(a, Err) else Ok(a)
 
 
-def _arithmetic(left: Result[Type], right: Result[Type]) -> Result[Type]:
+def _arithmetic(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
     """`+ - *`: both numeric; `Int op Int → Int`, else widen to `Rational`."""
     operands = _numbers(left, right)
     if isinstance(operands, Err):
@@ -209,7 +252,7 @@ def _arithmetic(left: Result[Type], right: Result[Type]) -> Result[Type]:
     return Ok(Type.RATIONAL)
 
 
-def _division(left: Result[Type], right: Result[Type]) -> Result[Type]:
+def _division(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
     """`/`: both numeric; always `Rational` (int / int → rational)."""
     operands = _numbers(left, right)
     if isinstance(operands, Err):
@@ -217,7 +260,7 @@ def _division(left: Result[Type], right: Result[Type]) -> Result[Type]:
     return Ok(Type.RATIONAL)
 
 
-def _ordering(left: Result[Type], right: Result[Type]) -> Result[Type]:
+def _ordering(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
     """`< > <= >=`: both numeric; result BOOLEAN."""
     operands = _numbers(left, right)
     if isinstance(operands, Err):
@@ -225,19 +268,24 @@ def _ordering(left: Result[Type], right: Result[Type]) -> Result[Type]:
     return Ok(Type.BOOLEAN)
 
 
-def _equality(left: Result[Type], right: Result[Type]) -> Result[Type]:
-    """`== !=`: same type, or both numeric (Int/Rational inter-compare); → BOOLEAN."""
+def _equality(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
+    """`== !=`: same type, or both numeric (Int/Rational inter-compare); → BOOLEAN.
+
+    Functions aren't comparable — a function-typed operand is a type error."""
     if isinstance(left, Err):
         return left
     if isinstance(right, Err):
         return right
-    both_numeric = left.value in _NUMERIC and right.value in _NUMERIC
-    if both_numeric or left.value is right.value:
+    a, b = left.value, right.value
+    if not (isinstance(a, Type) and isinstance(b, Type)):
+        return Err(RizTypeError())
+    both_numeric = a in _NUMERIC and b in _NUMERIC
+    if both_numeric or a is b:
         return Ok(Type.BOOLEAN)
     return Err(RizTypeError())
 
 
-def _logical_unary(operand: Result[Type]) -> Result[Type]:
+def _logical_unary(operand: Result[RizType]) -> Result[RizType]:
     """`!`: boolean operand → BOOLEAN."""
     if isinstance(operand, Err):
         return operand
@@ -246,7 +294,7 @@ def _logical_unary(operand: Result[Type]) -> Result[Type]:
     return Ok(Type.BOOLEAN)
 
 
-def _and_or(left: Result[Type], right: Result[Type]) -> Result[Type]:
+def _and_or(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
     """`& |`: logical on booleans (→ BOOLEAN), bitwise on integers (→ INTEGER)."""
     if isinstance(left, Err):
         return left

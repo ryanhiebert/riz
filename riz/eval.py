@@ -1,7 +1,10 @@
 """Evaluator: walk the syntax tree to a value, or an error that escaped."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import override
 
 from .boolean import Boolean
 from .integer import Integer
@@ -12,10 +15,12 @@ from .parse import (
     Binding,
     Block,
     BoolLiteral,
+    Call,
     Conditional,
     Divide,
     Equal,
     Expr,
+    Function,
     GreaterOrEqual,
     GreaterThan,
     IntLiteral,
@@ -34,7 +39,23 @@ from .ratio import Ratio
 from .result import Err, Ok, Result
 from .unit import Unit
 
-type Value = Integer | Ratio | Boolean | Unit
+
+# A function value: its parameters, its body, and a *value-captured* snapshot of
+# the environment at definition (a copy, so a later rebind of a free name can't
+# reach in). Identity equality (eq=False) — functions aren't compared by value.
+@dataclass(frozen=True, eq=False)
+class Closure:
+    name: str
+    parameters: tuple[Bind, ...]
+    body: Expr
+    env: dict[str, Value]
+
+    @override
+    def __str__(self) -> str:
+        return f"<fn {self.name}>"
+
+
+type Value = Integer | Ratio | Boolean | Unit | Closure
 type Numeric = Integer | Ratio
 
 
@@ -54,6 +75,26 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             if name not in env:
                 raise AssertionError("type checker should reject unbound names")
             return Ok(env[name])
+        case Function(name, parameters, body):
+            # Capture the env by value (a copy); bind the name to the closure.
+            # The copy is taken *before* the bind, so the name isn't in its own
+            # captured scope — `fn` is non-recursive for now, like `=`.
+            env[name] = Closure(name, parameters, body, dict(env))
+            return Ok(Unit())
+        case Call(callee, arguments):
+            evaluated = eval(callee, env)
+            if isinstance(evaluated, Err):
+                return evaluated
+            closure = evaluated.value
+            if not isinstance(closure, Closure):
+                raise AssertionError("type checker should reject calling a non-function")
+            argument = eval(arguments[0], env)
+            if isinstance(argument, Err):
+                return argument
+            # A fresh frame over the captured env, with the parameter bound.
+            frame = dict(closure.env)
+            frame[closure.parameters[0].name] = argument.value
+            return eval(closure.body, frame)
         case Conditional(condition, consequent, alternative):
             evaluated = eval(condition, env)
             if isinstance(evaluated, Err):

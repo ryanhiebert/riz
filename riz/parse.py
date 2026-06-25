@@ -179,11 +179,33 @@ class Binding:
     value: Expr
 
 
+# A function definition `fn name(params): body`. It binds `name` to a callable
+# and evaluates to `Unit` (a definition, like a binding). The call-shape on the
+# left is what marks it apart from a plain `=` binding. Today only a single
+# positional parameter is parsed; the labeled/defaulted product argument lands
+# later.
+@dataclass(frozen=True)
+class Function:
+    name: str
+    parameters: tuple[Pattern, ...]
+    body: Expr
+
+
+# A call `callee(argument)` — application of a function to its argument. Today a
+# single positional argument; the tuple/labeled product argument lands later.
+@dataclass(frozen=True)
+class Call:
+    callee: Expr
+    arguments: tuple[Expr, ...]
+
+
 Expr = (
     IntLiteral
     | BoolLiteral
     | Variable
     | Binding
+    | Function
+    | Call
     | Conditional
     | WhileLoop
     | Block
@@ -245,7 +267,7 @@ class _Parser:
         return None if self.at_end() else self.tokens[self.position]
 
     def expression(self, min_bp: int) -> Result[Expr]:
-        left = self.primary()
+        left = self._operand()
         if isinstance(left, Err):
             return left
         node = left.value
@@ -291,6 +313,8 @@ class _Parser:
                 return self._conditional()
             if token.name == "while":
                 return self._while()
+            if token.name == "fn":
+                return self._function()
             if token.name == "else":
                 return Err(RizParseError())  # 'else' with no matching 'if'
             return Ok(Variable(token.name))
@@ -317,6 +341,48 @@ class _Parser:
             return Ok(Not(operand.value))
         return Err(RizParseError())
 
+    def _operand(self) -> Result[Expr]:
+        # A primary plus any trailing call applications, so a call binds tighter
+        # than every operator: `f(x)`, `f(x)(y)`, `f(x) + 1`.
+        base = self.primary()
+        if isinstance(base, Err):
+            return base
+        node = base.value
+        while isinstance(self.peek(), LeftParenthesisToken):
+            self.position += 1
+            argument = self.expression(0)
+            if isinstance(argument, Err):
+                return argument
+            if not isinstance(self.peek(), RightParenthesisToken):
+                return Err(RizParseError())
+            self.position += 1
+            node = Call(node, (argument.value,))
+        return Ok(node)
+
+    def _function(self) -> Result[Expr]:
+        # `fn` already consumed. Parse `<name> ( <param> ) : <body>` — a single
+        # positional parameter for now; the param list is a pattern seam.
+        name = self.peek()
+        if not isinstance(name, IdentifierToken):
+            return Err(RizParseError())
+        self.position += 1
+        if not isinstance(self.peek(), LeftParenthesisToken):
+            return Err(RizParseError())
+        self.position += 1
+        parameter = self.peek()
+        if not isinstance(parameter, IdentifierToken):
+            return Err(RizParseError())
+        self.position += 1
+        if not isinstance(self.peek(), RightParenthesisToken):
+            return Err(RizParseError())
+        self.position += 1
+        if not isinstance(self.peek(), ColonToken):
+            return Err(RizParseError())
+        self.position += 1
+        body = self._body()
+        if isinstance(body, Err):
+            return body
+        return Ok(Function(name.name, (Bind(parameter.name),), body.value))
 
     def _conditional(self) -> Result[Expr]:
         # `if` already consumed. Parse `<cond> : <consequent> else : <alt>`.

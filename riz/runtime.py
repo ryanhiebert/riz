@@ -1,6 +1,6 @@
 """The Riz runtime."""
 
-from .check import RizNameError, RizTypeError, Type, check
+from .check import RizNameError, RizType, RizTypeError, check
 from .eval import RizDivisionByZeroError, Value, eval
 from .lex import lex
 from .parse import RizParseError, parse
@@ -11,7 +11,7 @@ class Runtime:
     def __init__(self):
         # Bindings persist across calls (one REPL session). Two parallel envs:
         # the checker's name -> Type and the evaluator's name -> Value.
-        self._types: dict[str, Type] = {}
+        self._types: dict[str, RizType] = {}
         self._values: dict[str, Value] = {}
 
     def evaluate(self, source: str) -> Result[Value]:
@@ -475,3 +475,58 @@ def test_failed_binding_leaves_no_trace():
     after = riz.evaluate("x")
     assert isinstance(after, Err)
     assert isinstance(after.error, RizNameError)
+
+
+def test_function_definition_and_call():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("fn square(n): n * n")) == "()"  # a def is Unit
+    assert _rendered(riz.evaluate("square(5)")) == "25"
+    assert _rendered(riz.evaluate("square(4) + 1")) == "17"  # a call composes
+    assert _rendered(riz.evaluate("1 + square(square(2))")) == "17"  # 1 + 16, nested
+
+
+def test_function_with_a_block_body():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("fn double(n):\n  n + n")) == "()"
+    assert _rendered(riz.evaluate("double(21)")) == "42"
+
+
+def test_a_call_types_the_body_against_the_argument():
+    riz = Runtime()
+    # The body is re-checked against the concrete argument, so the result type
+    # follows the argument: `n / 2` is Rational either way, whole or not.
+    _ = riz.evaluate("fn half(n): n / 2")
+    assert _rendered(riz.evaluate("half(5)")) == "5/2"
+    assert _rendered(riz.evaluate("half(6)")) == "3"  # 6/2, a whole ratio
+
+
+def test_a_bare_function_renders_as_itself():
+    riz = Runtime()
+    _ = riz.evaluate("fn square(n): n * n")
+    assert _rendered(riz.evaluate("square")) == "<fn square>"
+
+
+def test_closures_capture_free_variables_by_value():
+    riz = Runtime()
+    _ = riz.evaluate("k = 10")
+    _ = riz.evaluate("fn addk(n): n + k")  # captures k = 10 by value
+    _ = riz.evaluate("k = 99")  # rebinding k afterward can't reach the closure
+    assert _rendered(riz.evaluate("addk(5)")) == "15"
+
+
+def test_calling_a_non_function_is_a_type_error():
+    riz = Runtime()
+    for bad in ("5(3)", "(1 + 2)(3)", "True(1)"):
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err), f"{bad!r} should be an error, got {result!r}"
+        assert isinstance(result.error, RizTypeError)
+
+
+def test_a_type_error_in_a_called_body_surfaces():
+    riz = Runtime()
+    # `n & True` is Int & Bool — fine to define, rejected when a call forces the
+    # body to be checked against a concrete (here Integer) argument.
+    _ = riz.evaluate("fn bad(n): n & True")
+    result = riz.evaluate("bad(3)")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)
