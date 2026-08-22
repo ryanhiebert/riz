@@ -491,10 +491,10 @@ def test_function_with_a_block_body():
     assert _rendered(riz.evaluate("double(21)")) == "42"
 
 
-def test_a_call_types_the_body_against_the_argument():
+def test_an_inferred_function_type_is_reused_at_calls():
     riz = Runtime()
-    # The body is re-checked against the concrete argument, so the result type
-    # follows the argument: `n / 2` is Rational either way, whole or not.
+    # The definition infers a numeric input and Rational output once. Calls
+    # instantiate that stored relationship; they do not re-check the body.
     _ = riz.evaluate("fn half(n): n / 2")
     assert _rendered(riz.evaluate("half(5)")) == "5/2"
     assert _rendered(riz.evaluate("half(6)")) == "3"  # 6/2, a whole ratio
@@ -522,14 +522,41 @@ def test_calling_a_non_function_is_a_type_error():
         assert isinstance(result.error, RizTypeError)
 
 
-def test_a_type_error_in_a_called_body_surfaces():
+def test_a_function_body_is_checked_at_its_definition():
     riz = Runtime()
-    # `n & True` is Int & Bool — fine to define, rejected when a call forces the
-    # body to be checked against a concrete (here Integer) argument.
-    _ = riz.evaluate("fn bad(n): n & True")
-    result = riz.evaluate("bad(3)")
+    result = riz.evaluate("fn bad(): True + 1")
     assert isinstance(result, Err)
     assert isinstance(result.error, RizTypeError)
+    # A failed definition never enters either persistent environment.
+    after = riz.evaluate("bad")
+    assert isinstance(after, Err)
+    assert isinstance(after.error, RizNameError)
+
+
+def test_inferred_generic_functions_are_instantiated_per_call():
+    riz = Runtime()
+    _ = riz.evaluate("fn identity(value): value")
+    assert _rendered(riz.evaluate("identity(42)")) == "42"
+    assert _rendered(riz.evaluate("identity(True)")) == "True"
+    assert _rendered(riz.evaluate("identity((1, 2))")) == "(1, 2)"
+
+    _ = riz.evaluate("fn double(value): value + value")
+    assert _rendered(riz.evaluate("double(21)")) == "42"
+    assert _rendered(riz.evaluate("double(1 / 4)")) == "1/2"
+    wrong = riz.evaluate("double(True)")
+    assert isinstance(wrong, Err)
+    assert isinstance(wrong.error, RizTypeError)
+
+
+def test_higher_order_function_type_is_inferred_at_definition():
+    riz = Runtime()
+    _ = riz.evaluate("fn apply(function, value): function(value)")
+    _ = riz.evaluate("fn identity(value): value")
+    assert _rendered(riz.evaluate("apply(identity, True)")) == "True"
+    _ = riz.evaluate("fn increment(value): value + 1")
+    assert _rendered(riz.evaluate("apply(increment, 41)")) == "42"
+    _ = riz.evaluate("fn invert(value): !value")
+    assert _rendered(riz.evaluate("apply(invert, True)")) == "False"
 
 
 def test_self_recursion():

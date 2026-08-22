@@ -1,45 +1,19 @@
-"""Type checker: reject ill-typed programs before evaluation.
+"""Definition-site type inference for Riz.
 
-Runs between parse and eval. Synthesizes a type bottom-up (mirroring eval's
-operation table, including the coercion law) and rejects illegal operand
-combinations — `True + 1`, `1/2 & 3`, `1 == True` — as type errors *here*,
-never at eval (Riz doesn't enforce type rules at runtime).
+Functions are checked once where defined. Their stored type contains an input
+product, an output, and polymorphic operator constraints. Calls instantiate
+that type and never revisit the function body.
 """
-
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from .parse import (
-    Add,
-    And,
-    Bind,
-    Binding,
-    Block,
-    BoolLiteral,
-    Call,
-    Conditional,
-    Divide,
-    Equal,
-    Expr,
-    Function,
-    GreaterOrEqual,
-    GreaterThan,
-    IntLiteral,
-    LessOrEqual,
-    LessThan,
-    Multiply,
-    Negate,
-    Not,
-    NotEqual,
-    Or,
-    Pattern,
-    ProductLiteral,
-    ProductPattern,
-    Subtract,
-    Variable,
-    WhileLoop,
+    Add, And, Bind, Binding, Block, BoolLiteral, Call, Conditional, Divide,
+    Equal, Expr, Function, GreaterOrEqual, GreaterThan, IntLiteral, LessOrEqual,
+    LessThan, Multiply, Negate, Not, NotEqual, Or, Pattern, ProductLiteral,
+    ProductPattern, Subtract, Variable, WhileLoop,
 )
 from .result import Err, Ok, Result
 
@@ -59,35 +33,15 @@ class Type(Enum):
     UNIT = auto()
 
 
-# A function's type carries its name, parameters, body, and the type-env captured
-# at definition. The body is re-checked against the concrete argument types at
-# each call site (see `_check_call`), so a function's result type follows its
-# actual arguments (`half(5)` is Rational, `half(6)` whole).
 @dataclass(frozen=True, eq=False)
-class FunctionType:
-    name: str
-    parameter: ProductPattern
-    body: Expr
-    captured: dict[str, RizType]
+class TypeVariable: ...
 
 
-class _Bottom:
-    """The recursion-pending type ⊥: the bottom of the lattice, used while a
-    recursive function's return type is being solved by fixpoint. It propagates
-    through every operation (⊥ op x = ⊥) and is the identity of the join
-    (⊥ ∨ x = x), so a base case's type wins over a not-yet-known recursive one.
-    Always resolved away before a call returns — never escapes the checker."""
+@dataclass(frozen=True)
+class _NeverReturns: ...
 
 
-BOTTOM = _Bottom()
-
-
-# A recursive function, mid-check: a call to it yields the *current* assumed
-# return type instead of re-checking its body (which would loop forever). The
-# `_check_call` fixpoint widens `assumed` from ⊥ until it stabilizes.
-@dataclass(frozen=True, eq=False)
-class _Pending:
-    assumed: RizType
+NEVER_RETURNS = _NeverReturns()
 
 
 @dataclass(frozen=True)
@@ -95,174 +49,218 @@ class ProductType:
     items: tuple[RizType, ...]
 
 
-type RizType = Type | ProductType | FunctionType | _Pending | _Bottom
+@dataclass(frozen=True)
+class Constraint:
+    operation: str
+    terms: tuple[RizType, ...]
 
 
-_NUMERIC = (Type.INTEGER, Type.RATIONAL)
+@dataclass(frozen=True, eq=False)
+class FunctionType:
+    input: ProductType
+    output: RizType
+    constraints: tuple[Constraint, ...]
+    variables: tuple[TypeVariable, ...]
+
+
+type RizType = Type | TypeVariable | ProductType | FunctionType | _NeverReturns
+
+
+@dataclass
+class _State:
+    substitutions: dict[TypeVariable, RizType] = field(default_factory=dict)
+    constraints: list[Constraint] = field(default_factory=list)
+
+
+_I, _R, _B, _U = Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.UNIT
+_NUMERIC_PAIRS = ((_I, _I), (_I, _R), (_R, _I), (_R, _R))
+
+
+def _arithmetic_signatures() -> tuple[tuple[RizType, ...], ...]:
+    return tuple((a, b, _I if a is _I and b is _I else _R) for a, b in _NUMERIC_PAIRS)
+
+
+_SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
+    "negate": ((_I, _I), (_R, _R)),
+    "add": _arithmetic_signatures(),
+    "subtract": _arithmetic_signatures(),
+    "multiply": _arithmetic_signatures(),
+    "divide": tuple((a, b, _R) for a, b in _NUMERIC_PAIRS),
+    "order": tuple((a, b, _B) for a, b in _NUMERIC_PAIRS),
+    "equal": (
+        (_I, _I, _B), (_I, _R, _B), (_R, _I, _B), (_R, _R, _B),
+        (_B, _B, _B), (_U, _U, _B),
+    ),
+    "not": ((_B, _B),),
+    "and_or": ((_B, _B, _B), (_I, _I, _I)),
+}
 
 
 def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
+    state = _State()
+    result = _check(node, env, state)
+    if isinstance(result, Err):
+        return result
+    if not _solve(state):
+        return Err(RizTypeError())
+    return Ok(_resolve(result.value, state))
+
+
+def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType]:
     match node:
         case Binding(target, value):
-            # Infer the value's type, record it for the name, yield UNIT. The
-            # name isn't in scope for its own right-hand side (`=` is
-            # non-recursive), so `value` is checked against the current env.
-            inferred = check(value, env)
+            inferred = _check(value, env, state)
             if isinstance(inferred, Err):
                 return inferred
             if not _bind_pattern(target, inferred.value, env):
                 return Err(RizTypeError())
-            return Ok(Type.UNIT)
+            return Ok(_U)
         case Variable(name):
-            if name not in env:
-                return Err(RizNameError())
-            return Ok(env[name])
+            return Err(RizNameError()) if name not in env else Ok(env[name])
         case Function(name, parameter, body):
-            # Record the function's type (capturing the env by value) and yield
-            # UNIT. The body isn't checked here — it's checked against concrete
-            # arguments at each call, where recursion is also resolved.
-            env[name] = FunctionType(name, parameter, body, dict(env))
-            return Ok(Type.UNIT)
+            local = _State()
+            input_type = _pattern_type(parameter)
+            assert isinstance(input_type, ProductType)
+            frame = dict(env)
+            if not _bind_pattern(parameter, input_type, frame):
+                return Err(RizTypeError())
+            output_type = TypeVariable()
+            frame[name] = FunctionType(input_type, output_type, (), ())
+            checked_body = _check(body, frame, local)
+            if isinstance(checked_body, Err):
+                return checked_body
+            if not _unify(output_type, checked_body.value, local) or not _solve(local):
+                return Err(RizTypeError())
+            normalized_input = _resolve(input_type, local)
+            normalized_output = _resolve(output_type, local)
+            assert isinstance(normalized_input, ProductType)
+            constraints = tuple(_normalize_constraint(c, local) for c in local.constraints)
+            # Pure self-recursion leaves a result variable unrelated to either
+            # the input or an operation. Preserve the definition, but mark calls
+            # as non-returning so evaluation can never recurse accidentally.
+            if (
+                isinstance(normalized_output, TypeVariable)
+                and normalized_output not in _variables_in((normalized_input,), constraints)
+            ):
+                normalized_output = NEVER_RETURNS
+            variables = _variables_in((normalized_input, normalized_output), constraints)
+            env[name] = FunctionType(normalized_input, normalized_output, constraints, variables)
+            return Ok(_U)
         case Call(callee, arguments):
-            checked = check(callee, env)
+            checked = _check(callee, env, state)
             if isinstance(checked, Err):
                 return checked
-            function = checked.value
             argument_types: list[RizType] = []
             for argument in arguments:
-                argument_type = check(argument, env)
+                argument_type = _check(argument, env, state)
                 if isinstance(argument_type, Err):
                     return argument_type
                 argument_types.append(argument_type.value)
-            if isinstance(function, _Pending):
-                return Ok(function.assumed)  # a recursive call: the assumed return
+            argument_product = ProductType(tuple(argument_types))
+            function = _resolve(checked.value, state)
+            if isinstance(function, TypeVariable):
+                output = TypeVariable()
+                inferred_function = FunctionType(argument_product, output, (), ())
+                if not _unify(function, inferred_function, state):
+                    return Err(RizTypeError())
+                return Ok(output)
             if not isinstance(function, FunctionType):
-                return Err(RizTypeError())  # only functions are callable
-            return _check_call(function, ProductType(tuple(argument_types)))
+                return Err(RizTypeError())
+            instantiated = _instantiate(function)
+            if instantiated.output is NEVER_RETURNS:
+                return Err(RizTypeError())
+            state.constraints.extend(instantiated.constraints)
+            if not _unify(instantiated.input, argument_product, state):
+                return Err(RizTypeError())
+            if not _solve(state):
+                return Err(RizTypeError())
+            return Ok(_resolve(instantiated.output, state))
         case Conditional(condition, consequent, alternative):
-            checked = check(condition, env)
-            if isinstance(checked, Err):
-                return checked
-            if checked.value is not Type.BOOLEAN:
+            condition_type = _check(condition, env, state)
+            if isinstance(condition_type, Err):
+                return condition_type
+            if not _unify(condition_type.value, _B, state):
                 return Err(RizTypeError())
-            # Each branch is checked in its own copy, so a *new* binding stays
-            # local. A pre-existing variable modified in either branch is then
-            # merged back as the join of its type along the two paths (the φ-merge,
-            # over names that already existed); an incompatible join is an error.
             then_env, else_env = dict(env), dict(env)
-            consequent_type = check(consequent, then_env)
-            if isinstance(consequent_type, Err):
-                return consequent_type
-            alternative_type = check(alternative, else_env)
-            if isinstance(alternative_type, Err):
-                return alternative_type
-            for name in list(env):
-                merged = _join_types(then_env[name], else_env[name])
-                if merged is None:
+            then_type = _check(consequent, then_env, state)
+            if isinstance(then_type, Err):
+                return then_type
+            else_type = _check(alternative, else_env, state)
+            if isinstance(else_type, Err):
+                return else_type
+            for variable in list(env):
+                joined = _join_types(then_env[variable], else_env[variable], state)
+                if joined is None:
                     return Err(RizTypeError())
-                env[name] = merged
-            # The conditional's own value is the join of the two branches' types.
-            value_type = _join_types(consequent_type.value, alternative_type.value)
-            if value_type is None:
-                return Err(RizTypeError())
-            return Ok(value_type)
+                env[variable] = joined
+            joined = _join_types(then_type.value, else_type.value, state)
+            return Err(RizTypeError()) if joined is None else Ok(joined)
         case WhileLoop(condition, body):
-            # The body may run 0+ times, so each pre-existing name's type after
-            # the loop is the JOIN of its entry type and its type after the body,
-            # iterated to a fixpoint — a widening rebind like `n = n / 3`
-            # (Int → Rational) must be reflected. An *incompatible* join (e.g.
-            # Int vs Bool) is a type error: statically we can't know whether the
-            # loop ran. The condition is re-checked as the env widens, so it must
-            # stay BOOLEAN at every reachable type-state. (New names bound in the
-            # body stay body-local — they vanish with each `trial` copy.)
-            while True:
-                cond = check(condition, env)
-                if isinstance(cond, Err):
-                    return cond
-                if cond.value is not Type.BOOLEAN:
+            condition_type = _check(condition, env, state)
+            if isinstance(condition_type, Err):
+                return condition_type
+            if not _unify(condition_type.value, _B, state):
+                return Err(RizTypeError())
+            trial = dict(env)
+            checked_body = _check(body, trial, state)
+            if isinstance(checked_body, Err):
+                return checked_body
+            for variable in list(env):
+                joined = _join_types(env[variable], trial[variable], state)
+                if joined is None:
                     return Err(RizTypeError())
-                trial = dict(env)
-                body_type = check(body, trial)
-                if isinstance(body_type, Err):
-                    return body_type
-                widened = False
-                for name in list(env):
-                    joined = _join_types(env[name], trial[name])
-                    if joined is None:
-                        return Err(RizTypeError())
-                    if joined is not env[name]:
-                        env[name] = joined
-                        widened = True
-                if not widened:
-                    return Ok(Type.UNIT)
+                env[variable] = joined
+            return Ok(_U)
         case Block(statements):
-            # Statements checked in order (threading env, so later ones see
-            # earlier bindings); the block's type is its last statement's.
-            result = check(statements[0], env)
+            result = _check(statements[0], env, state)
             for statement in statements[1:]:
                 if isinstance(result, Err):
                     return result
-                result = check(statement, env)
+                result = _check(statement, env, state)
             return result
-        case IntLiteral():
-            return Ok(Type.INTEGER)
-        case BoolLiteral():
-            return Ok(Type.BOOLEAN)
+        case IntLiteral(): return Ok(_I)
+        case BoolLiteral(): return Ok(_B)
         case ProductLiteral(items):
             types: list[RizType] = []
             for item in items:
-                checked = check(item, env)
+                checked = _check(item, env, state)
                 if isinstance(checked, Err):
                     return checked
                 types.append(checked.value)
             return Ok(ProductType(tuple(types)))
-        case Negate(operand):
-            return _numeric_unary(check(operand, env))
-        case Add(left, right) | Subtract(left, right) | Multiply(left, right):
-            return _arithmetic(check(left, env), check(right, env))
-        case Divide(left, right):
-            return _division(check(left, env), check(right, env))
-        case (
-            LessThan(left, right)
-            | GreaterThan(left, right)
-            | LessOrEqual(left, right)
-            | GreaterOrEqual(left, right)
-        ):
-            return _ordering(check(left, env), check(right, env))
-        case Equal(left, right) | NotEqual(left, right):
-            return _equality(check(left, env), check(right, env))
-        case Not(operand):
-            return _logical_unary(check(operand, env))
-        case And(left, right) | Or(left, right):
-            return _and_or(check(left, env), check(right, env))
+        case Negate(operand): return _constrain("negate", (_check(operand, env, state),), state)
+        case Add(left, right): return _binary_constraint("add", left, right, env, state)
+        case Subtract(left, right): return _binary_constraint("subtract", left, right, env, state)
+        case Multiply(left, right): return _binary_constraint("multiply", left, right, env, state)
+        case Divide(left, right): return _binary_constraint("divide", left, right, env, state)
+        case LessThan(left, right) | GreaterThan(left, right) | LessOrEqual(left, right) | GreaterOrEqual(left, right):
+            return _binary_constraint("order", left, right, env, state)
+        case Equal(left, right) | NotEqual(left, right): return _binary_constraint("equal", left, right, env, state)
+        case Not(operand): return _constrain("not", (_check(operand, env, state),), state)
+        case And(left, right) | Or(left, right): return _binary_constraint("and_or", left, right, env, state)
 
 
-def _check_call(function: FunctionType, argument: ProductType) -> Result[RizType]:
-    """Type a call by checking the body with the parameters bound to the
-    arguments' types, over the env captured at definition — so the result follows
-    the actual arguments. Recursion is a return-type fixpoint: the function's own
-    name binds to a `_Pending` carrying the current assumed return, seeded at ⊥
-    and widened (via the body's joins) until it stabilizes. A result that stays ⊥
-    means no base case was reached — the function can never return — so reject it.
+def _binary_constraint(operation: str, left: Expr, right: Expr, env: dict[str, RizType], state: _State) -> Result[RizType]:
+    return _constrain(operation, (_check(left, env, state), _check(right, env, state)), state)
 
-    The lattice is finite (⊥ ⊏ Int ⊏ Rational, ⊥ ⊏ Boolean, …), so widening
-    converges in a few passes; the second pass also *re-checks* the recursive
-    branches against the seed, catching type errors that ⊥-propagation hid."""
-    assumed: RizType = BOTTOM
-    while True:
-        frame = dict(function.captured)
-        if not _bind_pattern(function.parameter, argument, frame):
-            return Err(RizTypeError())
-        frame[function.name] = _Pending(assumed)
-        result = check(function.body, frame)
-        if isinstance(result, Err):
-            return result
-        if result.value == assumed:
-            break
-        assumed = result.value
-    if assumed is BOTTOM:
-        return Err(RizTypeError())  # no base case: the function can't return
-    return Ok(assumed)
+
+def _constrain(operation: str, operands: tuple[Result[RizType], ...], state: _State) -> Result[RizType]:
+    terms: list[RizType] = []
+    for operand in operands:
+        if isinstance(operand, Err):
+            return operand
+        terms.append(operand.value)
+    result = TypeVariable()
+    state.constraints.append(Constraint(operation, (*terms, result)))
+    if not _solve(state):
+        return Err(RizTypeError())
+    return Ok(_resolve(result, state))
+
+
+def _pattern_type(pattern: Pattern) -> RizType:
+    match pattern:
+        case Bind(): return TypeVariable()
+        case ProductPattern(items): return ProductType(tuple(_pattern_type(item) for item in items))
 
 
 def _bind_pattern(pattern: Pattern, value: RizType, env: dict[str, RizType]) -> bool:
@@ -273,167 +271,142 @@ def _bind_pattern(pattern: Pattern, value: RizType, env: dict[str, RizType]) -> 
         case ProductPattern(items):
             if not isinstance(value, ProductType) or len(items) != len(value.items):
                 return False
-            return all(
-                _bind_pattern(item, item_type, env)
-                for item, item_type in zip(items, value.items)
-            )
+            return all(_bind_pattern(p, t, env) for p, t in zip(items, value.items))
 
 
-def _short_binary(left: Result[RizType], right: Result[RizType]) -> Result[RizType] | None:
-    """Short-circuit a binary operator on an `Err` (propagate it) or a ⊥ operand
-    (the result is ⊥); `None` means both operands are ordinary types."""
-    if isinstance(left, Err):
-        return left
-    if isinstance(right, Err):
-        return right
-    if left.value is BOTTOM or right.value is BOTTOM:
-        return Ok(BOTTOM)
-    return None
+def _resolve(value: RizType, state: _State) -> RizType:
+    if isinstance(value, TypeVariable) and value in state.substitutions:
+        resolved = _resolve(state.substitutions[value], state)
+        state.substitutions[value] = resolved
+        return resolved
+    if isinstance(value, ProductType):
+        return ProductType(tuple(_resolve(item, state) for item in value.items))
+    if isinstance(value, FunctionType) and not value.variables:
+        input_type = _resolve(value.input, state)
+        assert isinstance(input_type, ProductType)
+        return FunctionType(
+            input_type,
+            _resolve(value.output, state),
+            tuple(_normalize_constraint(c, state) for c in value.constraints),
+            (),
+        )
+    return value
 
 
-def _short_unary(operand: Result[RizType]) -> Result[RizType] | None:
-    if isinstance(operand, Err):
-        return operand
-    if operand.value is BOTTOM:
-        return Ok(BOTTOM)
-    return None
+def _occurs(variable: TypeVariable, value: RizType, state: _State) -> bool:
+    value = _resolve(value, state)
+    if value is variable: return True
+    if isinstance(value, ProductType):
+        return any(_occurs(variable, item, state) for item in value.items)
+    if isinstance(value, FunctionType):
+        return _occurs(variable, value.input, state) or _occurs(variable, value.output, state)
+    return False
 
 
-def _join_types(a: RizType, b: RizType) -> RizType | None:
-    """Join two types under the widening lattice: ⊥ is the identity (⊥ ∨ x = x);
-    two numbers widen (Int/Int → Int, else Rational); identical types join to
-    themselves; otherwise there is no join — the types are incompatible
-    (`None`)."""
-    if a is BOTTOM:
-        return b
-    if b is BOTTOM:
-        return a
-    if isinstance(a, Type) and isinstance(b, Type) and a in _NUMERIC and b in _NUMERIC:
-        if a is Type.INTEGER and b is Type.INTEGER:
-            return Type.INTEGER
-        return Type.RATIONAL
-    if isinstance(a, ProductType) and isinstance(b, ProductType):
-        if len(a.items) != len(b.items):
-            return None
+def _unify(left: RizType, right: RizType, state: _State) -> bool:
+    left, right = _resolve(left, state), _resolve(right, state)
+    if left is right: return True
+    if isinstance(left, TypeVariable):
+        if _occurs(left, right, state): return False
+        state.substitutions[left] = right
+        return True
+    if isinstance(right, TypeVariable): return _unify(right, left, state)
+    if isinstance(left, FunctionType) and isinstance(right, FunctionType):
+        left_instance = _instantiate(left) if left.variables else left
+        right_instance = _instantiate(right) if right.variables else right
+        state.constraints.extend(left_instance.constraints)
+        state.constraints.extend(right_instance.constraints)
+        return _unify(left_instance.input, right_instance.input, state) and _unify(
+            left_instance.output, right_instance.output, state
+        )
+    if isinstance(left, ProductType) and isinstance(right, ProductType):
+        return len(left.items) == len(right.items) and all(_unify(a, b, state) for a, b in zip(left.items, right.items))
+    return left is right
+
+
+def _trial(constraint: Constraint, signature: tuple[RizType, ...], state: _State) -> _State | None:
+    trial = _State(dict(state.substitutions), list(state.constraints))
+    return trial if all(_unify(term, expected, trial) for term, expected in zip(constraint.terms, signature)) else None
+
+
+def _solve(state: _State) -> bool:
+    changed = True
+    while changed:
+        changed = False
+        for constraint in state.constraints:
+            viable = [trial for signature in _SIGNATURES[constraint.operation] if (trial := _trial(constraint, signature, state)) is not None]
+            if not viable: return False
+            for variable in _variables_in(constraint.terms, ()):
+                resolutions = [_resolve(variable, trial) for trial in viable]
+                first = resolutions[0]
+                if all(_same_type(first, other) for other in resolutions[1:]):
+                    before = _resolve(variable, state)
+                    if not _unify(variable, first, state): return False
+                    if before is not _resolve(variable, state): changed = True
+    return True
+
+
+def _same_type(left: RizType, right: RizType) -> bool:
+    if left is right: return True
+    return isinstance(left, ProductType) and isinstance(right, ProductType) and len(left.items) == len(right.items) and all(_same_type(a, b) for a, b in zip(left.items, right.items))
+
+
+def _join_types(left: RizType, right: RizType, state: _State) -> RizType | None:
+    left, right = _resolve(left, state), _resolve(right, state)
+    if (left is _I and right is _R) or (left is _R and right is _I): return _R
+    if isinstance(left, ProductType) and isinstance(right, ProductType):
+        if len(left.items) != len(right.items): return None
         items: list[RizType] = []
-        for left, right in zip(a.items, b.items):
-            joined = _join_types(left, right)
-            if joined is None:
-                return None
+        for a, b in zip(left.items, right.items):
+            joined = _join_types(a, b, state)
+            if joined is None: return None
             items.append(joined)
         return ProductType(tuple(items))
-    if a is b:
-        return a
-    return None
+    return _resolve(left, state) if _unify(left, right, state) else None
 
 
-def _number(operand: Result[RizType]) -> Type | Err:
-    """Unwrap a numeric operand's type, or an Err if it isn't numeric."""
-    if isinstance(operand, Err):
-        return operand
-    value = operand.value
-    if isinstance(value, Type) and value in _NUMERIC:
-        return value
-    return Err(RizTypeError())
+def _normalize_constraint(constraint: Constraint, state: _State) -> Constraint:
+    return Constraint(constraint.operation, tuple(_resolve(t, state) for t in constraint.terms))
 
 
-def _numbers(left: Result[RizType], right: Result[RizType]) -> tuple[Type, Type] | Err:
-    a = _number(left)
-    if isinstance(a, Err):
-        return a
-    b = _number(right)
-    if isinstance(b, Err):
-        return b
-    return a, b
+def _collect_variables(value: RizType, found: list[TypeVariable]) -> None:
+    if isinstance(value, TypeVariable):
+        if value not in found: found.append(value)
+    elif isinstance(value, ProductType):
+        for item in value.items: _collect_variables(item, found)
+    elif isinstance(value, FunctionType):
+        _collect_variables(value.input, found)
+        _collect_variables(value.output, found)
+        for constraint in value.constraints:
+            for term in constraint.terms: _collect_variables(term, found)
 
 
-def _numeric_unary(operand: Result[RizType]) -> Result[RizType]:
-    """`-`: numeric operand → the same numeric type."""
-    short = _short_unary(operand)
-    if short is not None:
-        return short
-    a = _number(operand)
-    return a if isinstance(a, Err) else Ok(a)
+def _variables_in(values: tuple[RizType, ...], constraints: tuple[Constraint, ...]) -> tuple[TypeVariable, ...]:
+    found: list[TypeVariable] = []
+    for value in values: _collect_variables(value, found)
+    for constraint in constraints:
+        for term in constraint.terms: _collect_variables(term, found)
+    return tuple(found)
 
 
-def _arithmetic(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
-    """`+ - *`: both numeric; `Int op Int → Int`, else widen to `Rational`."""
-    short = _short_binary(left, right)
-    if short is not None:
-        return short
-    operands = _numbers(left, right)
-    if isinstance(operands, Err):
-        return operands
-    a, b = operands
-    if a is Type.INTEGER and b is Type.INTEGER:
-        return Ok(Type.INTEGER)
-    return Ok(Type.RATIONAL)
+def _replace(value: RizType, replacements: dict[TypeVariable, TypeVariable]) -> RizType:
+    if isinstance(value, TypeVariable): return replacements.get(value, value)
+    if isinstance(value, ProductType): return ProductType(tuple(_replace(item, replacements) for item in value.items))
+    if isinstance(value, FunctionType):
+        input_type = _replace(value.input, replacements)
+        assert isinstance(input_type, ProductType)
+        return FunctionType(
+            input_type,
+            _replace(value.output, replacements),
+            tuple(Constraint(c.operation, tuple(_replace(t, replacements) for t in c.terms)) for c in value.constraints),
+            tuple(replacements.get(v, v) for v in value.variables),
+        )
+    return value
 
 
-def _division(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
-    """`/`: both numeric; always `Rational` (int / int → rational)."""
-    short = _short_binary(left, right)
-    if short is not None:
-        return short
-    operands = _numbers(left, right)
-    if isinstance(operands, Err):
-        return operands
-    return Ok(Type.RATIONAL)
-
-
-def _ordering(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
-    """`< > <= >=`: both numeric; result BOOLEAN."""
-    short = _short_binary(left, right)
-    if short is not None:
-        return short
-    operands = _numbers(left, right)
-    if isinstance(operands, Err):
-        return operands
-    return Ok(Type.BOOLEAN)
-
-
-def _equality(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
-    """`== !=`: same type, or both numeric (Int/Rational inter-compare); → BOOLEAN.
-
-    Functions aren't comparable — a function-typed operand is a type error."""
-    if isinstance(left, Err):
-        return left
-    if isinstance(right, Err):
-        return right
-    a, b = left.value, right.value
-    if a is BOTTOM or b is BOTTOM:
-        return Ok(BOTTOM)
-    if not (isinstance(a, Type) and isinstance(b, Type)):
-        return Err(RizTypeError())
-    both_numeric = a in _NUMERIC and b in _NUMERIC
-    if both_numeric or a is b:
-        return Ok(Type.BOOLEAN)
-    return Err(RizTypeError())
-
-
-def _logical_unary(operand: Result[RizType]) -> Result[RizType]:
-    """`!`: boolean operand → BOOLEAN."""
-    if isinstance(operand, Err):
-        return operand
-    value = operand.value
-    if value is BOTTOM:
-        return Ok(BOTTOM)
-    if value is not Type.BOOLEAN:
-        return Err(RizTypeError())
-    return Ok(Type.BOOLEAN)
-
-
-def _and_or(left: Result[RizType], right: Result[RizType]) -> Result[RizType]:
-    """`& |`: logical on booleans (→ BOOLEAN), bitwise on integers (→ INTEGER)."""
-    if isinstance(left, Err):
-        return left
-    if isinstance(right, Err):
-        return right
-    a, b = left.value, right.value
-    if a is BOTTOM or b is BOTTOM:
-        return Ok(BOTTOM)
-    if a is Type.BOOLEAN and b is Type.BOOLEAN:
-        return Ok(Type.BOOLEAN)
-    if a is Type.INTEGER and b is Type.INTEGER:
-        return Ok(Type.INTEGER)
-    return Err(RizTypeError())
+def _instantiate(function: FunctionType) -> FunctionType:
+    replacements = {variable: TypeVariable() for variable in function.variables}
+    input_type = _replace(function.input, replacements)
+    assert isinstance(input_type, ProductType)
+    constraints = tuple(Constraint(c.operation, tuple(_replace(t, replacements) for t in c.terms)) for c in function.constraints)
+    return FunctionType(input_type, _replace(function.output, replacements), constraints, tuple(replacements.values()))
