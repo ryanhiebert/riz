@@ -34,6 +34,9 @@ from .parse import (
     Not,
     NotEqual,
     Or,
+    Pattern,
+    ProductLiteral,
+    ProductPattern,
     Subtract,
     Variable,
     WhileLoop,
@@ -63,7 +66,7 @@ class Type(Enum):
 @dataclass(frozen=True, eq=False)
 class FunctionType:
     name: str
-    parameters: tuple[Bind, ...]
+    parameter: ProductPattern
     body: Expr
     captured: dict[str, RizType]
 
@@ -87,7 +90,12 @@ class _Pending:
     assumed: RizType
 
 
-type RizType = Type | FunctionType | _Pending | _Bottom
+@dataclass(frozen=True)
+class ProductType:
+    items: tuple[RizType, ...]
+
+
+type RizType = Type | ProductType | FunctionType | _Pending | _Bottom
 
 
 _NUMERIC = (Type.INTEGER, Type.RATIONAL)
@@ -95,24 +103,25 @@ _NUMERIC = (Type.INTEGER, Type.RATIONAL)
 
 def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
     match node:
-        case Binding(Bind(name), value):
+        case Binding(target, value):
             # Infer the value's type, record it for the name, yield UNIT. The
             # name isn't in scope for its own right-hand side (`=` is
             # non-recursive), so `value` is checked against the current env.
             inferred = check(value, env)
             if isinstance(inferred, Err):
                 return inferred
-            env[name] = inferred.value
+            if not _bind_pattern(target, inferred.value, env):
+                return Err(RizTypeError())
             return Ok(Type.UNIT)
         case Variable(name):
             if name not in env:
                 return Err(RizNameError())
             return Ok(env[name])
-        case Function(name, parameters, body):
+        case Function(name, parameter, body):
             # Record the function's type (capturing the env by value) and yield
             # UNIT. The body isn't checked here — it's checked against concrete
             # arguments at each call, where recursion is also resolved.
-            env[name] = FunctionType(name, parameters, body, dict(env))
+            env[name] = FunctionType(name, parameter, body, dict(env))
             return Ok(Type.UNIT)
         case Call(callee, arguments):
             checked = check(callee, env)
@@ -129,9 +138,7 @@ def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
                 return Ok(function.assumed)  # a recursive call: the assumed return
             if not isinstance(function, FunctionType):
                 return Err(RizTypeError())  # only functions are callable
-            if len(arguments) != len(function.parameters):
-                return Err(RizTypeError())  # wrong number of arguments
-            return _check_call(function, tuple(argument_types))
+            return _check_call(function, ProductType(tuple(argument_types)))
         case Conditional(condition, consequent, alternative):
             checked = check(condition, env)
             if isinstance(checked, Err):
@@ -201,6 +208,14 @@ def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
             return Ok(Type.INTEGER)
         case BoolLiteral():
             return Ok(Type.BOOLEAN)
+        case ProductLiteral(items):
+            types: list[RizType] = []
+            for item in items:
+                checked = check(item, env)
+                if isinstance(checked, Err):
+                    return checked
+                types.append(checked.value)
+            return Ok(ProductType(tuple(types)))
         case Negate(operand):
             return _numeric_unary(check(operand, env))
         case Add(left, right) | Subtract(left, right) | Multiply(left, right):
@@ -222,7 +237,7 @@ def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
             return _and_or(check(left, env), check(right, env))
 
 
-def _check_call(function: FunctionType, arguments: tuple[RizType, ...]) -> Result[RizType]:
+def _check_call(function: FunctionType, argument: ProductType) -> Result[RizType]:
     """Type a call by checking the body with the parameters bound to the
     arguments' types, over the env captured at definition — so the result follows
     the actual arguments. Recursion is a return-type fixpoint: the function's own
@@ -236,8 +251,8 @@ def _check_call(function: FunctionType, arguments: tuple[RizType, ...]) -> Resul
     assumed: RizType = BOTTOM
     while True:
         frame = dict(function.captured)
-        for parameter, argument in zip(function.parameters, arguments):
-            frame[parameter.name] = argument
+        if not _bind_pattern(function.parameter, argument, frame):
+            return Err(RizTypeError())
         frame[function.name] = _Pending(assumed)
         result = check(function.body, frame)
         if isinstance(result, Err):
@@ -248,6 +263,20 @@ def _check_call(function: FunctionType, arguments: tuple[RizType, ...]) -> Resul
     if assumed is BOTTOM:
         return Err(RizTypeError())  # no base case: the function can't return
     return Ok(assumed)
+
+
+def _bind_pattern(pattern: Pattern, value: RizType, env: dict[str, RizType]) -> bool:
+    match pattern:
+        case Bind(name):
+            env[name] = value
+            return True
+        case ProductPattern(items):
+            if not isinstance(value, ProductType) or len(items) != len(value.items):
+                return False
+            return all(
+                _bind_pattern(item, item_type, env)
+                for item, item_type in zip(items, value.items)
+            )
 
 
 def _short_binary(left: Result[RizType], right: Result[RizType]) -> Result[RizType] | None:
@@ -283,6 +312,16 @@ def _join_types(a: RizType, b: RizType) -> RizType | None:
         if a is Type.INTEGER and b is Type.INTEGER:
             return Type.INTEGER
         return Type.RATIONAL
+    if isinstance(a, ProductType) and isinstance(b, ProductType):
+        if len(a.items) != len(b.items):
+            return None
+        items: list[RizType] = []
+        for left, right in zip(a.items, b.items):
+            joined = _join_types(left, right)
+            if joined is None:
+                return None
+            items.append(joined)
+        return ProductType(tuple(items))
     if a is b:
         return a
     return None

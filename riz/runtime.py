@@ -618,3 +618,32 @@ def test_zero_parameter_function_captures_by_value():
     _ = riz.evaluate("fn get_k(): k + 1")  # captures k = 100
     _ = riz.evaluate("k = 0")  # a later rebind can't reach the closure
     assert _rendered(riz.evaluate("get_k()")) == "101"
+
+
+def test_product_value_and_destructuring():
+    riz = Runtime()
+    _ = riz.evaluate("pair = (20, 22)")
+    assert _rendered(riz.evaluate("pair")) == "(20, 22)"
+    assert _rendered(riz.evaluate("(x, y) = pair")) == "()"
+    assert _rendered(riz.evaluate("x + y")) == "42"
+
+
+def test_nested_product_destructuring():
+    riz = Runtime()
+    _ = riz.evaluate("((a, b), c) = ((1, 2), 3)")
+    assert _rendered(riz.evaluate("a + b + c")) == "6"
+
+
+def test_product_pattern_in_function_parameter():
+    riz = Runtime()
+    _ = riz.evaluate("fn add_pair((x, y)): x + y")
+    assert _rendered(riz.evaluate("add_pair((20, 22))")) == "42"
+
+
+def test_product_pattern_shape_must_match():
+    riz = Runtime()
+    _ = riz.evaluate("fn first((x, y)): x")
+    for bad in ("first(1)", "first((1, 2, 3))"):
+        result = riz.evaluate(bad)
+        assert isinstance(result, Err)
+        assert isinstance(result.error, RizTypeError)

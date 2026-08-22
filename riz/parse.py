@@ -158,15 +158,24 @@ class Block:
     statements: tuple[Expr, ...]
 
 
-# A binding's left-hand side is a *pattern*, not a bare name — the seam that
-# grows tuple/wildcard/nested variants once destructuring lands. Today the only
-# variant is `Bind`, an identifier pattern.
+# A binding's left-hand side is a pattern: either a name or a recursively nested
+# positional product. The same patterns are used by assignments and functions.
 @dataclass(frozen=True)
 class Bind:
     name: str
 
 
-Pattern = Bind
+@dataclass(frozen=True)
+class ProductPattern:
+    items: tuple[Pattern, ...]
+
+
+Pattern = Bind | ProductPattern
+
+
+@dataclass(frozen=True)
+class ProductLiteral:
+    items: tuple[Expr, ...]
 
 
 # Assignment is an *expression* that evaluates to `Unit` (riz is
@@ -181,19 +190,16 @@ class Binding:
 
 
 # A function definition `fn name(params): body`. It binds `name` to a callable
-# and evaluates to `Unit` (a definition, like a binding). The call-shape on the
-# left is what marks it apart from a plain `=` binding. Today only a single
-# positional parameter is parsed; the labeled/defaulted product argument lands
-# later.
+# and evaluates to `Unit` (a definition, like a binding). Each parameter is a
+# pattern, so `fn first((x, y)): x` destructures its argument.
 @dataclass(frozen=True)
 class Function:
     name: str
-    parameters: tuple[Pattern, ...]
+    parameter: ProductPattern
     body: Expr
 
 
-# A call `callee(argument)` — application of a function to its argument. Today a
-# single positional argument; the tuple/labeled product argument lands later.
+# A call `callee(arguments)` — application of a function to positional values.
 @dataclass(frozen=True)
 class Call:
     callee: Expr
@@ -204,6 +210,7 @@ Expr = (
     IntLiteral
     | BoolLiteral
     | Variable
+    | ProductLiteral
     | Binding
     | Function
     | Call
@@ -321,13 +328,25 @@ class _Parser:
             return Ok(Variable(token.name))
         if isinstance(token, LeftParenthesisToken):
             self.position += 1
-            inner = self.expression(0)
-            if isinstance(inner, Err):
-                return inner
+            first = self.expression(0)
+            if isinstance(first, Err):
+                return first
+            if isinstance(self.peek(), CommaToken):
+                items = [first.value]
+                while isinstance(self.peek(), CommaToken):
+                    self.position += 1
+                    item = self.expression(0)
+                    if isinstance(item, Err):
+                        return item
+                    items.append(item.value)
+                if not isinstance(self.peek(), RightParenthesisToken):
+                    return Err(RizParseError())
+                self.position += 1
+                return Ok(ProductLiteral(tuple(items)))
             if not isinstance(self.peek(), RightParenthesisToken):
                 return Err(RizParseError())
             self.position += 1
-            return inner
+            return first
         if isinstance(token, MinusToken):
             self.position += 1
             operand = self.expression(_PREFIX_BP)
@@ -369,9 +388,8 @@ class _Parser:
         return Ok(node)
 
     def _function(self) -> Result[Expr]:
-        # `fn` already consumed. Parse `<name> ( <params> ) : <body>` — one or
-        # more comma-separated positional parameters; each is a pattern (today a
-        # bare-name `Bind`). A zero-parameter form awaits the Unit-argument case.
+        # `fn` already consumed. Parse `<name> ( <params> ) : <body>` — zero or
+        # more comma-separated positional patterns.
         name = self.peek()
         if not isinstance(name, IdentifierToken):
             return Err(RizParseError())
@@ -382,11 +400,10 @@ class _Parser:
         parameters: list[Pattern] = []
         if not isinstance(self.peek(), RightParenthesisToken):  # `fn f():` is empty
             while True:
-                parameter = self.peek()
-                if not isinstance(parameter, IdentifierToken):
-                    return Err(RizParseError())
-                self.position += 1
-                parameters.append(Bind(parameter.name))
+                parameter = self._pattern()
+                if isinstance(parameter, Err):
+                    return parameter
+                parameters.append(parameter.value)
                 if isinstance(self.peek(), CommaToken):
                     self.position += 1
                     continue
@@ -400,7 +417,10 @@ class _Parser:
         body = self._body()
         if isinstance(body, Err):
             return body
-        return Ok(Function(name.name, tuple(parameters), body.value))
+        # A call's positional arguments form one product; the function matches
+        # that product with this outer pattern. A nested product parameter stays
+        # nested: `fn first((x, y))` accepts one product-valued argument.
+        return Ok(Function(name.name, ProductPattern(tuple(parameters)), body.value))
 
     def _conditional(self) -> Result[Expr]:
         # `if` already consumed. Parse `<cond> : <consequent> else : <alt>`.
@@ -482,10 +502,45 @@ class _Parser:
         return Ok(statements)
 
     def _as_pattern(self, expr: Expr) -> Result[Pattern]:
-        # Only a bare name is a legal binding target today; `1 = 2` etc. fail.
         if isinstance(expr, Variable):
             return Ok(Bind(expr.name))
+        if isinstance(expr, ProductLiteral):
+            items: list[Pattern] = []
+            for item in expr.items:
+                pattern = self._as_pattern(item)
+                if isinstance(pattern, Err):
+                    return pattern
+                items.append(pattern.value)
+            return Ok(ProductPattern(tuple(items)))
         return Err(RizParseError())
+
+    def _pattern(self) -> Result[Pattern]:
+        token = self.peek()
+        if isinstance(token, IdentifierToken):
+            self.position += 1
+            return Ok(Bind(token.name))
+        if not isinstance(token, LeftParenthesisToken):
+            return Err(RizParseError())
+        self.position += 1
+        first = self._pattern()
+        if isinstance(first, Err):
+            return first
+        if not isinstance(self.peek(), CommaToken):
+            if not isinstance(self.peek(), RightParenthesisToken):
+                return Err(RizParseError())
+            self.position += 1
+            return first
+        items = [first.value]
+        while isinstance(self.peek(), CommaToken):
+            self.position += 1
+            item = self._pattern()
+            if isinstance(item, Err):
+                return item
+            items.append(item.value)
+        if not isinstance(self.peek(), RightParenthesisToken):
+            return Err(RizParseError())
+        self.position += 1
+        return Ok(ProductPattern(tuple(items)))
 
 
 def parse(tokens: list[Token]) -> Result[Expr]:

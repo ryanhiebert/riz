@@ -31,11 +31,15 @@ from .parse import (
     Not,
     NotEqual,
     Or,
+    Pattern,
+    ProductLiteral,
+    ProductPattern,
     Subtract,
     Variable,
     WhileLoop,
 )
 from .ratio import Ratio
+from .product import Product
 from .result import Err, Ok, Result
 from .unit import Unit
 
@@ -46,7 +50,7 @@ from .unit import Unit
 @dataclass(frozen=True, eq=False)
 class Closure:
     name: str
-    parameters: tuple[Bind, ...]
+    parameter: ProductPattern
     body: Expr
     env: dict[str, Value]
 
@@ -55,7 +59,7 @@ class Closure:
         return f"<fn {self.name}>"
 
 
-type Value = Integer | Ratio | Boolean | Unit | Closure
+type Value = Integer | Ratio | Boolean | Unit | Product[Value] | Closure
 type Numeric = Integer | Ratio
 
 
@@ -65,23 +69,24 @@ class RizDivisionByZeroError: ...
 
 def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
     match node:
-        case Binding(Bind(name), value):
+        case Binding(target, value):
             evaluated = eval(value, env)
             if isinstance(evaluated, Err):
                 return evaluated  # a failed binding leaves the name untouched
-            env[name] = evaluated.value
+            if not _bind_pattern(target, evaluated.value, env):
+                raise AssertionError("type checker should reject a mismatched pattern")
             return Ok(Unit())
         case Variable(name):
             if name not in env:
                 raise AssertionError("type checker should reject unbound names")
             return Ok(env[name])
-        case Function(name, parameters, body):
+        case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the
             # function's own name to the closure *inside* its captured env, so the
             # body can call itself (self-recursion). The self-reference is to the
             # closure value, not the outer slot, so a later rebind of the name
             # can't change it — value-capture intact.
-            closure = Closure(name, parameters, body, dict(env))
+            closure = Closure(name, parameter, body, dict(env))
             closure.env[name] = closure
             env[name] = closure
             return Ok(Unit())
@@ -100,8 +105,8 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
                 values.append(evaluated_argument.value)
             # A fresh frame over the captured env, with the parameters bound.
             frame = dict(closure.env)
-            for parameter, value in zip(closure.parameters, values):
-                frame[parameter.name] = value
+            if not _bind_pattern(closure.parameter, Product(tuple(values)), frame):
+                raise AssertionError("type checker should reject a mismatched pattern")
             return eval(closure.body, frame)
         case Conditional(condition, consequent, alternative):
             evaluated = eval(condition, env)
@@ -137,6 +142,14 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             return Ok(Integer(value))
         case BoolLiteral(value):
             return Ok(Boolean(value))
+        case ProductLiteral(items):
+            product_values: list[Value] = []
+            for item in items:
+                evaluated = eval(item, env)
+                if isinstance(evaluated, Err):
+                    return evaluated
+                product_values.append(evaluated.value)
+            return Ok(Product(tuple(product_values)))
         case Negate(operand):
             return _unary(eval(operand, env), _negate)
         case Add(left, right):
@@ -165,6 +178,20 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             return _binary_value(eval(left, env), eval(right, env), _or)
         case Not(operand):
             return _unary_value(eval(operand, env), _logical_not)
+
+
+def _bind_pattern(pattern: Pattern, value: Value, env: dict[str, Value]) -> bool:
+    match pattern:
+        case Bind(name):
+            env[name] = value
+            return True
+        case ProductPattern(items):
+            if not isinstance(value, Product) or len(items) != len(value.items):
+                return False
+            return all(
+                _bind_pattern(item, item_value, env)
+                for item, item_value in zip(items, value.items)
+            )
 
 
 def _unary(
