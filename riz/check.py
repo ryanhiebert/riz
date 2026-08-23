@@ -59,8 +59,8 @@ class Constraint:
 class FunctionType:
     input: ProductType
     output: RizType
-    constraints: tuple[Constraint, ...]
-    variables: tuple[TypeVariable, ...]
+    constraints: tuple[Constraint, ...] = ()
+    variables: tuple[TypeVariable, ...] = ()
 
 
 type RizType = Type | TypeVariable | ProductType | FunctionType | _NeverReturns

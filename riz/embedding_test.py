@@ -31,3 +31,63 @@ def test_lookup_and_invalid_host_names_return_name_errors():
     assert isinstance(missing, riz.Err)
     assert isinstance(invalid, riz.Err)
     assert isinstance(reserved, riz.Err)
+
+
+def test_typed_native_function_is_callable_from_riz():
+    runtime = riz.Runtime()
+    signature = riz.FunctionType(
+        riz.ProductType((riz.Type.INTEGER, riz.Type.INTEGER)),
+        riz.Type.INTEGER,
+    )
+
+    def add(
+        runtime: riz.Runtime, arguments: riz.Product[riz.Value]
+    ) -> riz.Result[riz.Value]:
+        del runtime
+        left, right = arguments.items
+        assert isinstance(left, riz.Integer) and isinstance(right, riz.Integer)
+        return riz.Ok(riz.Integer(left.value + right.value))
+
+    assert runtime.define_function("host_add", signature, add) == riz.Ok(riz.Unit())
+    assert runtime.evaluate("host_add(20, 22)") == riz.Ok(riz.Integer(42))
+    wrong = runtime.evaluate("host_add(True, 1)")
+    assert isinstance(wrong, riz.Err)
+
+
+def test_native_function_return_is_checked_against_its_signature():
+    runtime = riz.Runtime()
+    signature = riz.FunctionType(riz.ProductType(()), riz.Type.INTEGER)
+
+    def lies(
+        runtime: riz.Runtime, arguments: riz.Product[riz.Value]
+    ) -> riz.Result[riz.Value]:
+        del runtime, arguments
+        return riz.Ok(riz.Boolean(True))
+
+    assert runtime.define_function("lies", signature, lies) == riz.Ok(riz.Unit())
+    result = runtime.evaluate("lies()")
+    assert isinstance(result, riz.Err)
+
+
+def test_extension_uses_registration_api_and_loads_atomically():
+    runtime = riz.Runtime()
+    answer_type = riz.FunctionType(riz.ProductType(()), riz.Type.INTEGER)
+
+    def answer(
+        runtime: riz.Runtime, arguments: riz.Product[riz.Value]
+    ) -> riz.Result[riz.Value]:
+        del runtime, arguments
+        return riz.Ok(riz.Integer(42))
+
+    def extension(runtime: riz.Runtime) -> riz.Result[riz.Unit]:
+        return runtime.define_function("answer", answer_type, answer)
+
+    assert runtime.load(extension) == riz.Ok(riz.Unit())
+    assert runtime.evaluate("answer()") == riz.Ok(riz.Integer(42))
+
+    def broken_extension(runtime: riz.Runtime) -> riz.Result[riz.Unit]:
+        assert runtime.define("temporary", riz.Integer(1)) == riz.Ok(riz.Unit())
+        return riz.Err(object())
+
+    assert isinstance(runtime.load(broken_extension), riz.Err)
+    assert isinstance(runtime.lookup("temporary"), riz.Err)

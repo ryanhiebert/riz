@@ -8,6 +8,7 @@ from typing import override
 
 from .boolean import Boolean
 from .integer import Integer
+from .check import FunctionType
 from .parse import (
     Add,
     And,
@@ -59,7 +60,18 @@ class Closure:
         return f"<fn {self.name}>"
 
 
-type Value = Integer | Ratio | Boolean | Unit | Product[Value] | Closure
+@dataclass(frozen=True, eq=False)
+class NativeFunction:
+    name: str
+    signature: FunctionType
+    callback: Callable[[Product[Value]], Result[Value]]
+
+    @override
+    def __str__(self) -> str:
+        return f"<native fn {self.name}>"
+
+
+type Value = Integer | Ratio | Boolean | Unit | Product[Value] | Closure | NativeFunction
 type Numeric = Integer | Ratio
 
 
@@ -94,8 +106,8 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             evaluated = eval(callee, env)
             if isinstance(evaluated, Err):
                 return evaluated
-            closure = evaluated.value
-            if not isinstance(closure, Closure):
+            function = evaluated.value
+            if not isinstance(function, (Closure, NativeFunction)):
                 raise AssertionError("type checker should reject calling a non-function")
             values: list[Value] = []
             for argument in arguments:
@@ -103,11 +115,14 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
                 if isinstance(evaluated_argument, Err):
                     return evaluated_argument
                 values.append(evaluated_argument.value)
+            argument = Product(tuple(values))
+            if isinstance(function, NativeFunction):
+                return function.callback(argument)
             # A fresh frame over the captured env, with the parameters bound.
-            frame = dict(closure.env)
-            if not _bind_pattern(closure.parameter, Product(tuple(values)), frame):
+            frame = dict(function.env)
+            if not _bind_pattern(function.parameter, argument, frame):
                 raise AssertionError("type checker should reject a mismatched pattern")
-            return eval(closure.body, frame)
+            return eval(function.body, frame)
         case Conditional(condition, consequent, alternative):
             evaluated = eval(condition, env)
             if isinstance(evaluated, Err):

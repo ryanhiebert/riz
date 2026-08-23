@@ -1,8 +1,20 @@
-"""The Riz runtime."""
+"""The Riz runtime and its Python embedding boundary."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
 
 from .boolean import Boolean
-from .check import ProductType, RizNameError, RizType, RizTypeError, Type, check
-from .eval import RizDivisionByZeroError, Value, eval
+from .check import (
+    FunctionType,
+    ProductType,
+    RizNameError,
+    RizType,
+    RizTypeError,
+    Type,
+    check,
+)
+from .eval import NativeFunction, RizDivisionByZeroError, Value, eval
 from .integer import Integer
 from .lex import IdentifierToken, lex
 from .parse import RizParseError, parse
@@ -40,6 +52,43 @@ class Runtime:
         if name not in self._values:
             return Err(RizNameError())
         return Ok(self._values[name])
+
+    def define_function(
+        self,
+        name: str,
+        signature: FunctionType,
+        callback: Callable[[Runtime, Product[Value]], Result[Value]],
+    ) -> Result[Unit]:
+        """Define a typed native function callable from Riz.
+
+        Native callbacks use the same argument product and Result boundary as
+        Riz itself. Their declared signature is checked on registration and on
+        every returned value, keeping host code from violating Riz's type rules.
+        """
+        if not _is_bindable_name(name) or not _is_concrete_function(signature):
+            return Err(RizTypeError())
+
+        def invoke(arguments: Product[Value]) -> Result[Value]:
+            result = callback(self, arguments)
+            if isinstance(result, Err):
+                return result
+            if not _matches_type(result.value, signature.output):
+                return Err(RizTypeError())
+            return result
+
+        function = NativeFunction(name, signature, invoke)
+        self._types[name] = signature
+        self._values[name] = function
+        return Ok(Unit())
+
+    def load(self, extension: Extension) -> Result[Unit]:
+        """Load an extension atomically into this interpreter."""
+        types, values = dict(self._types), dict(self._values)
+        result = extension(self)
+        if isinstance(result, Err):
+            self._types, self._values = types, values
+            return result
+        return Ok(Unit())
 
     def evaluate(self, source: str) -> Result[Value]:
         # Whole pipeline is Result-valued: no program error ever raises here.
@@ -91,7 +140,50 @@ def _type_of(value: Value) -> RizType | None:
                 return None
             item_types.append(item_type)
         return ProductType(tuple(item_types))
+    if isinstance(value, NativeFunction):
+        return value.signature
     return None  # closures require an explicit function signature
+
+
+def _matches_type(value: Value, expected: RizType) -> bool:
+    actual = _type_of(value)
+    if actual is None:
+        return False
+    if isinstance(actual, ProductType) and isinstance(expected, ProductType):
+        return len(actual.items) == len(expected.items) and all(
+            _same_public_type(a, b) for a, b in zip(actual.items, expected.items)
+        )
+    return _same_public_type(actual, expected)
+
+
+def _same_public_type(left: RizType, right: RizType) -> bool:
+    if left is right:
+        return True
+    if isinstance(left, ProductType) and isinstance(right, ProductType):
+        return len(left.items) == len(right.items) and all(
+            _same_public_type(a, b) for a, b in zip(left.items, right.items)
+        )
+    return False
+
+
+def _is_concrete_type(value: RizType) -> bool:
+    if isinstance(value, Type):
+        return True
+    if isinstance(value, ProductType):
+        return all(_is_concrete_type(item) for item in value.items)
+    return False
+
+
+def _is_concrete_function(signature: FunctionType) -> bool:
+    return (
+        not signature.constraints
+        and not signature.variables
+        and _is_concrete_type(signature.input)
+        and _is_concrete_type(signature.output)
+    )
+
+
+type Extension = Callable[[Runtime], Result[Unit]]
 
 
 def _rendered(result: Result[Value]) -> str:
