@@ -13,8 +13,10 @@ from .check import (
     RizTypeError,
     Type,
     check,
+    check_call_type,
+    types_compatible,
 )
-from .eval import NativeFunction, RizDivisionByZeroError, Value, eval
+from .eval import Closure, NativeFunction, RizDivisionByZeroError, Value, call, eval
 from .integer import Integer
 from .lex import IdentifierToken, lex
 from .parse import RizParseError, parse
@@ -90,6 +92,23 @@ class Runtime:
             return result
         return Ok(Unit())
 
+    def call(self, function: Value, arguments: Product[Value]) -> Result[Value]:
+        """Call a typed Riz or native function directly from the host."""
+        if not isinstance(function, (Closure, NativeFunction)):
+            return Err(RizTypeError())
+        argument_type = _type_of(arguments)
+        if not isinstance(argument_type, ProductType):
+            return Err(RizTypeError())
+        expected = check_call_type(function.signature, argument_type)
+        if isinstance(expected, Err):
+            return expected
+        result = call(function, arguments)
+        if isinstance(result, Err):
+            return result
+        if not _matches_type(result.value, expected.value):
+            return Err(RizTypeError())
+        return Ok(_specialize_callable(result.value, expected.value))
+
     def evaluate(self, source: str) -> Result[Value]:
         # Whole pipeline is Result-valued: no program error ever raises here.
         parsed = parse(lex(source))
@@ -98,11 +117,12 @@ class Runtime:
         # Check and evaluate against copies, committing both only if the whole
         # statement succeeds — a binding that fails partway leaves no trace.
         types = dict(self._types)
-        checked = check(parsed.value, types)
+        functions: dict[int, FunctionType] = {}
+        checked = check(parsed.value, types, functions)
         if isinstance(checked, Err):
             return checked
         values = dict(self._values)
-        evaluated = eval(parsed.value, values)
+        evaluated = eval(parsed.value, values, functions)
         if isinstance(evaluated, Err):
             return evaluated
         self._types = types
@@ -142,7 +162,7 @@ def _type_of(value: Value) -> RizType | None:
         return ProductType(tuple(item_types))
     if isinstance(value, NativeFunction):
         return value.signature
-    return None  # closures require an explicit function signature
+    return value.signature  # the remaining Value variant is Closure
 
 
 def _matches_type(value: Value, expected: RizType) -> bool:
@@ -156,6 +176,22 @@ def _matches_type(value: Value, expected: RizType) -> bool:
     return _same_public_type(actual, expected)
 
 
+def _specialize_callable(value: Value, expected: RizType) -> Value:
+    if not isinstance(value, Closure) or not isinstance(expected, FunctionType):
+        return value
+    specialized = Closure(
+        value.name,
+        expected,
+        value.parameter,
+        value.body,
+        dict(value.env),
+        value.functions,
+    )
+    if specialized.env.get(value.name) is value:
+        specialized.env[value.name] = specialized
+    return specialized
+
+
 def _same_public_type(left: RizType, right: RizType) -> bool:
     if left is right:
         return True
@@ -163,6 +199,8 @@ def _same_public_type(left: RizType, right: RizType) -> bool:
         return len(left.items) == len(right.items) and all(
             _same_public_type(a, b) for a, b in zip(left.items, right.items)
         )
+    if isinstance(left, FunctionType) and isinstance(right, FunctionType):
+        return types_compatible(left, right)
     return False
 
 

@@ -51,9 +51,11 @@ from .unit import Unit
 @dataclass(frozen=True, eq=False)
 class Closure:
     name: str
+    signature: FunctionType
     parameter: ProductPattern
     body: Expr
     env: dict[str, Value]
+    functions: dict[int, FunctionType]
 
     @override
     def __str__(self) -> str:
@@ -79,10 +81,15 @@ type Numeric = Integer | Ratio
 class RizDivisionByZeroError: ...
 
 
-def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
+def eval(
+    node: Expr,
+    env: dict[str, Value],
+    functions: dict[int, FunctionType] | None = None,
+) -> Result[Value]:
+    functions = {} if functions is None else functions
     match node:
         case Binding(target, value):
-            evaluated = eval(value, env)
+            evaluated = eval(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated  # a failed binding leaves the name untouched
             if not _bind_pattern(target, evaluated.value, env):
@@ -98,12 +105,15 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
             # body can call itself (self-recursion). The self-reference is to the
             # closure value, not the outer slot, so a later rebind of the name
             # can't change it — value-capture intact.
-            closure = Closure(name, parameter, body, dict(env))
+            signature = functions.get(id(node))
+            if signature is None:
+                raise AssertionError("type checker should type every function")
+            closure = Closure(name, signature, parameter, body, dict(env), functions)
             closure.env[name] = closure
             env[name] = closure
             return Ok(Unit())
         case Call(callee, arguments):
-            evaluated = eval(callee, env)
+            evaluated = eval(callee, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
             function = evaluated.value
@@ -111,47 +121,41 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
                 raise AssertionError("type checker should reject calling a non-function")
             values: list[Value] = []
             for argument in arguments:
-                evaluated_argument = eval(argument, env)
+                evaluated_argument = eval(argument, env, functions)
                 if isinstance(evaluated_argument, Err):
                     return evaluated_argument
                 values.append(evaluated_argument.value)
             argument = Product(tuple(values))
-            if isinstance(function, NativeFunction):
-                return function.callback(argument)
-            # A fresh frame over the captured env, with the parameters bound.
-            frame = dict(function.env)
-            if not _bind_pattern(function.parameter, argument, frame):
-                raise AssertionError("type checker should reject a mismatched pattern")
-            return eval(function.body, frame)
+            return call(function, argument)
         case Conditional(condition, consequent, alternative):
-            evaluated = eval(condition, env)
+            evaluated = eval(condition, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
             # Lazy: only the taken branch runs (so the dead branch's errors, like
             # div-by-zero, never fire), in the shared env so its changes to
             # pre-existing variables persist (new branch vars are type-gated out).
             branch = consequent if _truth(evaluated.value) else alternative
-            return eval(branch, env)
+            return eval(branch, env, functions)
         case WhileLoop(condition, body):
             # The body runs in the shared env, so a rebind like `n = n * 2`
             # persists and the next condition check sees it (loop progresses).
             while True:
-                tested = eval(condition, env)
+                tested = eval(condition, env, functions)
                 if isinstance(tested, Err):
                     return tested
                 if not _truth(tested.value):
                     return Ok(Unit())
-                ran = eval(body, env)
+                ran = eval(body, env, functions)
                 if isinstance(ran, Err):
                     return ran
         case Block(statements):
             # Statements run in order, sharing env so a binding is visible to
             # later statements; the block's value is its last statement's.
-            result = eval(statements[0], env)
+            result = eval(statements[0], env, functions)
             for statement in statements[1:]:
                 if isinstance(result, Err):
                     return result
-                result = eval(statement, env)
+                result = eval(statement, env, functions)
             return result
         case IntLiteral(value):
             return Ok(Integer(value))
@@ -160,39 +164,48 @@ def eval(node: Expr, env: dict[str, Value]) -> Result[Value]:
         case ProductLiteral(items):
             product_values: list[Value] = []
             for item in items:
-                evaluated = eval(item, env)
+                evaluated = eval(item, env, functions)
                 if isinstance(evaluated, Err):
                     return evaluated
                 product_values.append(evaluated.value)
             return Ok(Product(tuple(product_values)))
         case Negate(operand):
-            return _unary(eval(operand, env), _negate)
+            return _unary(eval(operand, env, functions), _negate)
         case Add(left, right):
-            return _binary(eval(left, env), eval(right, env), _add)
+            return _binary(eval(left, env, functions), eval(right, env, functions), _add)
         case Subtract(left, right):
-            return _binary(eval(left, env), eval(right, env), _subtract)
+            return _binary(eval(left, env, functions), eval(right, env, functions), _subtract)
         case Multiply(left, right):
-            return _binary(eval(left, env), eval(right, env), _multiply)
+            return _binary(eval(left, env, functions), eval(right, env, functions), _multiply)
         case Divide(left, right):
-            return _binary(eval(left, env), eval(right, env), _divide)
+            return _binary(eval(left, env, functions), eval(right, env, functions), _divide)
         case LessThan(left, right):
-            return _binary(eval(left, env), eval(right, env), _less_than)
+            return _binary(eval(left, env, functions), eval(right, env, functions), _less_than)
         case GreaterThan(left, right):
-            return _binary(eval(left, env), eval(right, env), _greater_than)
+            return _binary(eval(left, env, functions), eval(right, env, functions), _greater_than)
         case LessOrEqual(left, right):
-            return _binary(eval(left, env), eval(right, env), _less_or_equal)
+            return _binary(eval(left, env, functions), eval(right, env, functions), _less_or_equal)
         case GreaterOrEqual(left, right):
-            return _binary(eval(left, env), eval(right, env), _greater_or_equal)
+            return _binary(eval(left, env, functions), eval(right, env, functions), _greater_or_equal)
         case Equal(left, right):
-            return _binary_value(eval(left, env), eval(right, env), _equal)
+            return _binary_value(eval(left, env, functions), eval(right, env, functions), _equal)
         case NotEqual(left, right):
-            return _binary_value(eval(left, env), eval(right, env), _not_equal)
+            return _binary_value(eval(left, env, functions), eval(right, env, functions), _not_equal)
         case And(left, right):
-            return _binary_value(eval(left, env), eval(right, env), _and)
+            return _binary_value(eval(left, env, functions), eval(right, env, functions), _and)
         case Or(left, right):
-            return _binary_value(eval(left, env), eval(right, env), _or)
+            return _binary_value(eval(left, env, functions), eval(right, env, functions), _or)
         case Not(operand):
-            return _unary_value(eval(operand, env), _logical_not)
+            return _unary_value(eval(operand, env, functions), _logical_not)
+
+
+def call(function: Closure | NativeFunction, argument: Product[Value]) -> Result[Value]:
+    if isinstance(function, NativeFunction):
+        return function.callback(argument)
+    frame = dict(function.env)
+    if not _bind_pattern(function.parameter, argument, frame):
+        raise AssertionError("type checker should reject a mismatched pattern")
+    return eval(function.body, frame, function.functions)
 
 
 def _bind_pattern(pattern: Pattern, value: Value, env: dict[str, Value]) -> bool:

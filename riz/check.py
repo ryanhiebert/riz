@@ -70,6 +70,7 @@ type RizType = Type | TypeVariable | ProductType | FunctionType | _NeverReturns
 class _State:
     substitutions: dict[TypeVariable, RizType] = field(default_factory=dict)
     constraints: list[Constraint] = field(default_factory=list)
+    functions: dict[int, FunctionType] = field(default_factory=dict)
 
 
 _I, _R, _B, _U = Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.UNIT
@@ -96,14 +97,36 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
 }
 
 
-def check(node: Expr, env: dict[str, RizType]) -> Result[RizType]:
-    state = _State()
+def check(
+    node: Expr,
+    env: dict[str, RizType],
+    functions: dict[int, FunctionType] | None = None,
+) -> Result[RizType]:
+    state = _State(functions={} if functions is None else functions)
     result = _check(node, env, state)
     if isinstance(result, Err):
         return result
     if not _solve(state):
         return Err(RizTypeError())
     return Ok(_resolve(result.value, state))
+
+
+def check_call_type(function: FunctionType, argument: ProductType) -> Result[RizType]:
+    """Instantiate a callable type and check one host-supplied argument product."""
+    state = _State()
+    instantiated = _instantiate(function)
+    if instantiated.output is NEVER_RETURNS:
+        return Err(RizTypeError())
+    state.constraints.extend(instantiated.constraints)
+    if not _unify(instantiated.input, argument, state) or not _solve(state):
+        return Err(RizTypeError())
+    return Ok(_resolve(instantiated.output, state))
+
+
+def types_compatible(left: RizType, right: RizType) -> bool:
+    """Whether two public type handles can describe the same value."""
+    state = _State()
+    return _unify(left, right, state) and _solve(state)
 
 
 def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType]:
@@ -118,7 +141,7 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
         case Variable(name):
             return Err(RizNameError()) if name not in env else Ok(env[name])
         case Function(name, parameter, body):
-            local = _State()
+            local = _State(functions=state.functions)
             input_type = _pattern_type(parameter)
             assert isinstance(input_type, ProductType)
             frame = dict(env)
@@ -143,8 +166,20 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
                 and normalized_output not in _variables_in((normalized_input,), constraints)
             ):
                 normalized_output = NEVER_RETURNS
-            variables = _variables_in((normalized_input, normalized_output), constraints)
-            env[name] = FunctionType(normalized_input, normalized_output, constraints, variables)
+            inferred_variables = _variables_in(
+                (normalized_input, normalized_output), constraints
+            )
+            captured_variables = _variables_in(tuple(env.values()), ())
+            variables = tuple(
+                variable
+                for variable in inferred_variables
+                if variable not in captured_variables
+            )
+            function_type = FunctionType(
+                normalized_input, normalized_output, constraints, variables
+            )
+            env[name] = function_type
+            state.functions[id(node)] = function_type
             return Ok(_U)
         case Call(callee, arguments):
             checked = _check(callee, env, state)
@@ -281,14 +316,14 @@ def _resolve(value: RizType, state: _State) -> RizType:
         return resolved
     if isinstance(value, ProductType):
         return ProductType(tuple(_resolve(item, state) for item in value.items))
-    if isinstance(value, FunctionType) and not value.variables:
+    if isinstance(value, FunctionType):
         input_type = _resolve(value.input, state)
         assert isinstance(input_type, ProductType)
         return FunctionType(
             input_type,
             _resolve(value.output, state),
             tuple(_normalize_constraint(c, state) for c in value.constraints),
-            (),
+            value.variables,
         )
     return value
 
@@ -375,10 +410,14 @@ def _collect_variables(value: RizType, found: list[TypeVariable]) -> None:
     elif isinstance(value, ProductType):
         for item in value.items: _collect_variables(item, found)
     elif isinstance(value, FunctionType):
-        _collect_variables(value.input, found)
-        _collect_variables(value.output, found)
+        nested: list[TypeVariable] = []
+        _collect_variables(value.input, nested)
+        _collect_variables(value.output, nested)
         for constraint in value.constraints:
-            for term in constraint.terms: _collect_variables(term, found)
+            for term in constraint.terms: _collect_variables(term, nested)
+        for variable in nested:
+            if variable not in value.variables and variable not in found:
+                found.append(variable)
 
 
 def _variables_in(values: tuple[RizType, ...], constraints: tuple[Constraint, ...]) -> tuple[TypeVariable, ...]:
