@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import override
+from typing import Generic, TypeVar, override
+
+
+T_co = TypeVar("T_co", covariant=True)
 
 
 @dataclass(frozen=True)
-class Product[T]:
-    items: tuple[T, ...]
+class Product(Generic[T_co]):
+    items: tuple[T_co, ...]
 
     @override
     def __str__(self) -> str:

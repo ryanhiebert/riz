@@ -1,10 +1,15 @@
 """The Riz runtime."""
 
-from .check import RizNameError, RizType, RizTypeError, check
+from .boolean import Boolean
+from .check import ProductType, RizNameError, RizType, RizTypeError, Type, check
 from .eval import RizDivisionByZeroError, Value, eval
-from .lex import lex
+from .integer import Integer
+from .lex import IdentifierToken, lex
 from .parse import RizParseError, parse
+from .product import Product
+from .ratio import Ratio
 from .result import Err, Ok, Result
+from .unit import Unit
 
 
 class Runtime:
@@ -13,6 +18,28 @@ class Runtime:
         # the checker's name -> Type and the evaluator's name -> Value.
         self._types: dict[str, RizType] = {}
         self._values: dict[str, Value] = {}
+
+    def define(self, name: str, value: Value) -> Result[Unit]:
+        """Define a host-supplied Riz value in this interpreter.
+
+        The value and its inferred Riz type enter the parallel environments
+        together. Function values need an explicit signature and will be added
+        by the native-function API rather than this value-only boundary.
+        """
+        if not _is_bindable_name(name):
+            return Err(RizNameError())
+        value_type = _type_of(value)
+        if value_type is None:
+            return Err(RizTypeError())
+        self._types[name] = value_type
+        self._values[name] = value
+        return Ok(Unit())
+
+    def lookup(self, name: str) -> Result[Value]:
+        """Return a global Riz value, or a name error when it is unbound."""
+        if name not in self._values:
+            return Err(RizNameError())
+        return Ok(self._values[name])
 
     def evaluate(self, source: str) -> Result[Value]:
         # Whole pipeline is Result-valued: no program error ever raises here.
@@ -32,6 +59,39 @@ class Runtime:
         self._types = types
         self._values = values
         return evaluated
+
+
+_RESERVED_NAMES = {"True", "False", "if", "else", "while", "fn"}
+
+
+def _is_bindable_name(name: str) -> bool:
+    tokens = lex(name)
+    return (
+        len(tokens) == 1
+        and isinstance(tokens[0], IdentifierToken)
+        and tokens[0].name == name
+        and name not in _RESERVED_NAMES
+    )
+
+
+def _type_of(value: Value) -> RizType | None:
+    if isinstance(value, Integer):
+        return Type.INTEGER
+    if isinstance(value, Ratio):
+        return Type.RATIONAL
+    if isinstance(value, Boolean):
+        return Type.BOOLEAN
+    if isinstance(value, Unit):
+        return Type.UNIT
+    if isinstance(value, Product):
+        item_types: list[RizType] = []
+        for item in value.items:
+            item_type = _type_of(item)
+            if item_type is None:
+                return None
+            item_types.append(item_type)
+        return ProductType(tuple(item_types))
+    return None  # closures require an explicit function signature
 
 
 def _rendered(result: Result[Value]) -> str:
