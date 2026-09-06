@@ -12,7 +12,7 @@ from enum import Enum, auto
 from .parse import (
     Add, And, Bind, Binding, Block, BoolLiteral, Call, Conditional, Divide,
     Equal, Expr, Function, GreaterOrEqual, GreaterThan, IntLiteral, LessOrEqual,
-    LessThan, Multiply, Negate, Not, NotEqual, Or, Pattern, ProductLiteral,
+    LessThan, Member, Multiply, Negate, Not, NotEqual, Or, Pattern, ProductLiteral,
     ProductPattern, StringLiteral, Subtract, Variable, WhileLoop,
 )
 from .result import Err, Ok, Result
@@ -97,6 +97,8 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
     ),
     "not": ((_B, _B),),
     "and_or": ((_B, _B, _B), (_I, _I, _I)),
+    "member:numerator": ((_R, _I),),
+    "member:denominator": ((_R, _I),),
 }
 
 
@@ -143,6 +145,8 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
             return Ok(_U)
         case Variable(name):
             return Err(RizNameError()) if name not in env else Ok(env[name])
+        case Member(value, name):
+            return _constrain(f"member:{name}", (_check(value, env, state),), state)
         case Function(name, parameter, body):
             local = _State(functions=state.functions)
             input_type = _pattern_type(parameter)
@@ -373,7 +377,11 @@ def _solve(state: _State) -> bool:
     while changed:
         changed = False
         for constraint in state.constraints:
-            viable = [trial for signature in _SIGNATURES[constraint.operation] if (trial := _trial(constraint, signature, state)) is not None]
+            viable = [
+                trial
+                for signature in _SIGNATURES.get(constraint.operation, ())
+                if (trial := _trial(constraint, signature, state)) is not None
+            ]
             if not viable: return False
             for variable in _variables_in(constraint.terms, ()):
                 resolutions = [_resolve(variable, trial) for trial in viable]

@@ -74,6 +74,10 @@ class CommaToken: ...  # separates parameters and arguments: `f(a, b)`
 
 
 @dataclass(frozen=True)
+class DotToken: ...  # retrieves a named member: `value.member`
+
+
+@dataclass(frozen=True)
 class NotEqualToken: ...
 
 
@@ -128,6 +132,7 @@ Token = (
     | EqualsToken
     | ColonToken
     | CommaToken
+    | DotToken
     | NotEqualToken
     | AndToken
     | OrToken
@@ -252,6 +257,9 @@ def lex(source: str) -> list[Token]:
         elif char == ",":
             tokens.append(CommaToken())
             position += 1
+        elif char == ".":
+            tokens.append(DotToken())
+            position += 1
         elif char == "&":
             tokens.append(AndToken())
             position += 1
@@ -314,6 +322,12 @@ def test_string_literals_and_escapes():
     assert lex('"hello"') == [StringToken("hello")]
     assert lex(r'"say \"hi\"\\there\nnext\tstop\r"') == [
         StringToken('say "hi"\\there\nnext\tstop\r')
+    ]
+
+
+def test_member_access_tokens():
+    assert lex("value.numerator") == [
+        IdentifierToken("value"), DotToken(), IdentifierToken("numerator")
     ]
 
 

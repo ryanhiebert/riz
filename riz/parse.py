@@ -8,6 +8,7 @@ from .lex import (
     ColonToken,
     CommaToken,
     DedentToken,
+    DotToken,
     EqualsToken,
     EqualToken,
     GreaterOrEqualToken,
@@ -212,6 +213,12 @@ class Call:
     arguments: tuple[Expr, ...]
 
 
+@dataclass(frozen=True)
+class Member:
+    value: Expr
+    name: str
+
+
 Expr = (
     IntLiteral
     | StringLiteral
@@ -221,6 +228,7 @@ Expr = (
     | Binding
     | Function
     | Call
+    | Member
     | Conditional
     | WhileLoop
     | Block
@@ -372,29 +380,40 @@ class _Parser:
         return Err(RizParseError())
 
     def _operand(self) -> Result[Expr]:
-        # A primary plus any trailing call applications, so a call binds tighter
-        # than every operator: `f(x)`, `f(x)(y)`, `f(x) + 1`.
+        # Calls and member access are postfix operations. They compose from left
+        # to right and bind tighter than every operator: `a.b()`, `f().member`.
         base = self.primary()
         if isinstance(base, Err):
             return base
         node = base.value
-        while isinstance(self.peek(), LeftParenthesisToken):
-            self.position += 1
-            arguments: list[Expr] = []
-            if not isinstance(self.peek(), RightParenthesisToken):  # `f()` is empty
-                while True:
-                    argument = self.expression(0)
-                    if isinstance(argument, Err):
-                        return argument
-                    arguments.append(argument.value)
-                    if isinstance(self.peek(), CommaToken):
-                        self.position += 1
-                        continue
-                    break
-            if not isinstance(self.peek(), RightParenthesisToken):
-                return Err(RizParseError())
-            self.position += 1
-            node = Call(node, tuple(arguments))
+        while True:
+            if isinstance(self.peek(), DotToken):
+                self.position += 1
+                name = self.peek()
+                if not isinstance(name, IdentifierToken):
+                    return Err(RizParseError())
+                self.position += 1
+                node = Member(node, name.name)
+                continue
+            if isinstance(self.peek(), LeftParenthesisToken):
+                self.position += 1
+                arguments: list[Expr] = []
+                if not isinstance(self.peek(), RightParenthesisToken):
+                    while True:
+                        argument = self.expression(0)
+                        if isinstance(argument, Err):
+                            return argument
+                        arguments.append(argument.value)
+                        if isinstance(self.peek(), CommaToken):
+                            self.position += 1
+                            continue
+                        break
+                if not isinstance(self.peek(), RightParenthesisToken):
+                    return Err(RizParseError())
+                self.position += 1
+                node = Call(node, tuple(arguments))
+                continue
+            break
         return Ok(node)
 
     def _function(self) -> Result[Expr]:

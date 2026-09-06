@@ -27,6 +27,7 @@ from .parse import (
     IntLiteral,
     LessOrEqual,
     LessThan,
+    Member,
     Multiply,
     Negate,
     Not,
@@ -101,6 +102,17 @@ def eval(
             if name not in env:
                 raise AssertionError("type checker should reject unbound names")
             return Ok(env[name])
+        case Member(value, name):
+            evaluated = eval(value, env, functions)
+            if isinstance(evaluated, Err):
+                return evaluated
+            if not isinstance(evaluated.value, Ratio):
+                raise AssertionError("type checker should reject member access")
+            if name == "numerator":
+                return Ok(Integer(evaluated.value.numerator))
+            if name == "denominator":
+                return Ok(Integer(evaluated.value.denominator))
+            raise AssertionError("type checker should reject unknown members")
         case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the
             # function's own name to the closure *inside* its captured env, so the

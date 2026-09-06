@@ -275,6 +275,28 @@ def test_strings():
     assert isinstance(riz.evaluate('"one" + 1'), Err)
 
 
+def test_ratio_members():
+    riz = Runtime()
+    assert riz.evaluate("value = 6/4\nvalue.numerator") == Ok(Integer(3))
+    assert riz.evaluate("value.denominator") == Ok(Integer(2))
+    assert riz.evaluate("(6/4).numerator + 1") == Ok(Integer(4))
+    assert riz.evaluate("fn half(): 1/2\nhalf().denominator") == Ok(Integer(2))
+
+
+def test_ratio_member_type_inference_in_functions():
+    riz = Runtime()
+    assert riz.evaluate("fn numerator(value): value.numerator") == Ok(Unit())
+    assert riz.evaluate("numerator(10/4)") == Ok(Integer(5))
+    assert isinstance(riz.evaluate("numerator(1)"), Err)
+
+
+def test_invalid_member_access():
+    riz = Runtime()
+    assert isinstance(riz.evaluate("(1/2).missing"), Err)
+    assert isinstance(riz.evaluate("1.numerator"), Err)
+    assert isinstance(riz.evaluate("(1/2)."), Err)
+
+
 def test_subtraction():
     riz = Runtime()
     assert _rendered(riz.evaluate("5-2")) == "3"
