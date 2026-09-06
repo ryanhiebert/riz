@@ -8,6 +8,12 @@ def test_public_embedding_api_defines_and_looks_up_values():
     assert runtime.evaluate("answer + 1") == riz.Ok(riz.Integer(43))
 
 
+def test_public_embedding_api_supports_strings():
+    runtime = riz.Runtime()
+    assert runtime.define("module_name", riz.String("machine")) == riz.Ok(riz.Unit())
+    assert runtime.evaluate("module_name") == riz.Ok(riz.String("machine"))
+
+
 def test_host_products_have_structural_types():
     runtime = riz.Runtime()
     point = riz.Product((riz.Integer(20), riz.Integer(22)))

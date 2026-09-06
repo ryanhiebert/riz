@@ -24,6 +24,7 @@ from .product import Product
 from .ratio import Ratio
 from .result import Err, Ok, Result
 from .unit import Unit
+from .string import String
 
 
 class Runtime:
@@ -150,6 +151,8 @@ def _type_of(value: Value) -> RizType | None:
         return Type.RATIONAL
     if isinstance(value, Boolean):
         return Type.BOOLEAN
+    if isinstance(value, String):
+        return Type.STRING
     if isinstance(value, Unit):
         return Type.UNIT
     if isinstance(value, Product):
@@ -261,6 +264,15 @@ def test_addition():
     assert _rendered(riz.evaluate("2+3")) == "5"  # int + int -> int
     assert _rendered(riz.evaluate("1/2+1/3")) == "5/6"  # rational + rational
     assert _rendered(riz.evaluate("2+3/4")) == "11/4"  # int widens to rational
+
+
+def test_strings():
+    riz = Runtime()
+    assert riz.evaluate('"hello"') == Ok(String("hello"))
+    assert riz.evaluate('"same" == "same"') == Ok(Boolean(True))
+    assert riz.evaluate('"same" != "different"') == Ok(Boolean(True))
+    assert isinstance(riz.evaluate('"one" + "two"'), Err)
+    assert isinstance(riz.evaluate('"one" + 1'), Err)
 
 
 def test_subtraction():

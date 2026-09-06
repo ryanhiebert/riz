@@ -13,7 +13,7 @@ from .parse import (
     Add, And, Bind, Binding, Block, BoolLiteral, Call, Conditional, Divide,
     Equal, Expr, Function, GreaterOrEqual, GreaterThan, IntLiteral, LessOrEqual,
     LessThan, Multiply, Negate, Not, NotEqual, Or, Pattern, ProductLiteral,
-    ProductPattern, Subtract, Variable, WhileLoop,
+    ProductPattern, StringLiteral, Subtract, Variable, WhileLoop,
 )
 from .result import Err, Ok, Result
 
@@ -30,6 +30,7 @@ class Type(Enum):
     INTEGER = auto()
     RATIONAL = auto()
     BOOLEAN = auto()
+    STRING = auto()
     UNIT = auto()
 
 
@@ -73,7 +74,9 @@ class _State:
     functions: dict[int, FunctionType] = field(default_factory=dict)
 
 
-_I, _R, _B, _U = Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.UNIT
+_I, _R, _B, _S, _U = (
+    Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.STRING, Type.UNIT
+)
 _NUMERIC_PAIRS = ((_I, _I), (_I, _R), (_R, _I), (_R, _R))
 
 
@@ -90,7 +93,7 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
     "order": tuple((a, b, _B) for a, b in _NUMERIC_PAIRS),
     "equal": (
         (_I, _I, _B), (_I, _R, _B), (_R, _I, _B), (_R, _R, _B),
-        (_B, _B, _B), (_U, _U, _B),
+        (_B, _B, _B), (_S, _S, _B), (_U, _U, _B),
     ),
     "not": ((_B, _B),),
     "and_or": ((_B, _B, _B), (_I, _I, _I)),
@@ -255,6 +258,7 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
             return result
         case IntLiteral(): return Ok(_I)
         case BoolLiteral(): return Ok(_B)
+        case StringLiteral(): return Ok(_S)
         case ProductLiteral(items):
             types: list[RizType] = []
             for item in items:

@@ -35,6 +35,7 @@ from .parse import (
     Pattern,
     ProductLiteral,
     ProductPattern,
+    StringLiteral,
     Subtract,
     Variable,
     WhileLoop,
@@ -43,6 +44,7 @@ from .ratio import Ratio
 from .product import Product
 from .result import Err, Ok, Result
 from .unit import Unit
+from .string import String
 
 
 # A function value: its parameters, its body, and a *value-captured* snapshot of
@@ -73,7 +75,7 @@ class NativeFunction:
         return f"<native fn {self.name}>"
 
 
-type Value = Integer | Ratio | Boolean | Unit | Product[Value] | Closure | NativeFunction
+type Value = Integer | Ratio | Boolean | String | Unit | Product[Value] | Closure | NativeFunction
 type Numeric = Integer | Ratio
 
 
@@ -161,6 +163,8 @@ def eval(
             return Ok(Integer(value))
         case BoolLiteral(value):
             return Ok(Boolean(value))
+        case StringLiteral(value):
+            return Ok(String(value))
         case ProductLiteral(items):
             product_values: list[Value] = []
             for item in items:
@@ -351,6 +355,8 @@ def _not_equal(left: Value, right: Value) -> Result[Value]:
 
 
 def _equals(left: Value, right: Value) -> bool:
+    if isinstance(left, String) and isinstance(right, String):
+        return left.value == right.value
     if isinstance(left, Boolean) and isinstance(right, Boolean):
         return left.value == right.value
     if isinstance(left, Boolean) or isinstance(right, Boolean):

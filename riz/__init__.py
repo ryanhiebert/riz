@@ -8,6 +8,7 @@ from .product import Product
 from .ratio import Ratio
 from .result import Err, Ok, Result
 from .runtime import Extension, Runtime
+from .string import String
 from .unit import Unit
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "Ratio",
     "Result",
     "Runtime",
+    "String",
     "Type",
     "Unit",
     "Value",

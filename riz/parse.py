@@ -27,6 +27,7 @@ from .lex import (
     RightParenthesisToken,
     SlashToken,
     StarToken,
+    StringToken,
     Token,
 )
 from .result import Err, Ok, Result
@@ -39,6 +40,11 @@ class RizParseError: ...
 @dataclass(frozen=True)
 class IntLiteral:
     value: int
+
+
+@dataclass(frozen=True)
+class StringLiteral:
+    value: str
 
 
 @dataclass(frozen=True)
@@ -208,6 +214,7 @@ class Call:
 
 Expr = (
     IntLiteral
+    | StringLiteral
     | BoolLiteral
     | Variable
     | ProductLiteral
@@ -311,6 +318,9 @@ class _Parser:
         if isinstance(token, IntegerToken):
             self.position += 1
             return Ok(IntLiteral(token.value))
+        if isinstance(token, StringToken):
+            self.position += 1
+            return Ok(StringLiteral(token.value))
         if isinstance(token, IdentifierToken):
             self.position += 1
             if token.name == "True":

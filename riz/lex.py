@@ -13,6 +13,11 @@ class IntegerToken:
 
 
 @dataclass(frozen=True)
+class StringToken:
+    value: str
+
+
+@dataclass(frozen=True)
 class SlashToken: ...
 
 
@@ -108,6 +113,7 @@ class UnknownToken:
 
 Token = (
     IntegerToken
+    | StringToken
     | SlashToken
     | PlusToken
     | MinusToken
@@ -252,6 +258,31 @@ def lex(source: str) -> list[Token]:
         elif char == "|":
             tokens.append(OrToken())
             position += 1
+        elif char == '"':
+            start = position
+            position += 1
+            value: list[str] = []
+            escapes = {'"': '"', "\\": "\\", "n": "\n", "r": "\r", "t": "\t"}
+            valid = True
+            while position < length and source[position] != '"':
+                if source[position] == "\n":
+                    valid = False
+                    break
+                if source[position] != "\\":
+                    value.append(source[position])
+                    position += 1
+                    continue
+                position += 1
+                if position >= length or source[position] not in escapes:
+                    valid = False
+                    break
+                value.append(escapes[source[position]])
+                position += 1
+            if valid and position < length and source[position] == '"':
+                position += 1
+                tokens.append(StringToken("".join(value)))
+            else:
+                tokens.append(UnknownToken(source[start:position]))
         elif char.isalpha() or char == "_":
             start = position
             while position < len(source) and (
@@ -277,6 +308,18 @@ def lex(source: str) -> list[Token]:
 def test_single_line_has_no_layout_tokens():
     # Single-line input tokenizes exactly as it did before layout existed.
     assert lex("2 + 3") == [IntegerToken(2), PlusToken(), IntegerToken(3)]
+
+
+def test_string_literals_and_escapes():
+    assert lex('"hello"') == [StringToken("hello")]
+    assert lex(r'"say \"hi\"\\there\nnext\tstop\r"') == [
+        StringToken('say "hi"\\there\nnext\tstop\r')
+    ]
+
+
+def test_malformed_strings_are_unknown_tokens():
+    assert isinstance(lex('"unterminated')[0], UnknownToken)
+    assert isinstance(lex(r'"bad\q"')[0], UnknownToken)
 
 
 def test_leading_indent_at_top_level_is_an_unexpected_indent():

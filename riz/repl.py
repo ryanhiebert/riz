@@ -99,6 +99,7 @@ def test_render_value():
     assert render("6/4", runtime) == "3/2"
     assert render("2 + 3", runtime) == "5"
     assert render("True", runtime) == "True"
+    assert render('"name"', runtime) == '"name"'
 
 
 def test_render_blank_is_silent():
