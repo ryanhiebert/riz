@@ -346,6 +346,9 @@ class _Parser:
             return Ok(Variable(token.name))
         if isinstance(token, LeftParenthesisToken):
             self.position += 1
+            if isinstance(self.peek(), RightParenthesisToken):
+                self.position += 1
+                return Ok(ProductLiteral(()))
             first = self.expression(0)
             if isinstance(first, Err):
                 return first
@@ -551,6 +554,9 @@ class _Parser:
         if not isinstance(token, LeftParenthesisToken):
             return Err(RizParseError())
         self.position += 1
+        if isinstance(self.peek(), RightParenthesisToken):
+            self.position += 1
+            return Ok(ProductPattern(()))
         first = self._pattern()
         if isinstance(first, Err):
             return first

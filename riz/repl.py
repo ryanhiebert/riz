@@ -106,6 +106,7 @@ def test_render_blank_is_silent():
     runtime = Runtime()
     assert render("", runtime) is None
     assert render("   ", runtime) is None  # whitespace-only counts as blank
+    assert render("()", runtime) is None  # the empty product is Unit
 
 
 def test_render_error():

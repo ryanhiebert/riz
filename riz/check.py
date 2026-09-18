@@ -31,7 +31,6 @@ class Type(Enum):
     RATIONAL = auto()
     BOOLEAN = auto()
     STRING = auto()
-    UNIT = auto()
     PYTHON = auto()
     PYTHON_VALUE = auto()
 
@@ -76,10 +75,11 @@ class _State:
     functions: dict[int, FunctionType] = field(default_factory=dict)
 
 
-_I, _R, _B, _S, _U, _PY, _PV = (
-    Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.STRING, Type.UNIT,
+_I, _R, _B, _S, _PY, _PV = (
+    Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.STRING,
     Type.PYTHON, Type.PYTHON_VALUE,
 )
+_U = ProductType(())
 _NUMERIC_PAIRS = ((_I, _I), (_I, _R), (_R, _I), (_R, _R))
 
 
@@ -108,6 +108,7 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
     "member:boolean": ((_PV, FunctionType(ProductType(()), _B)),),
     "member:string": ((_PV, FunctionType(ProductType(()), _S)),),
     "member:unit": ((_PV, FunctionType(ProductType(()), _U)),),
+    "python_argument": ((_I,), (_B,), (_S,), (_PV,)),
 }
 
 
@@ -210,7 +211,10 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
             argument_product = ProductType(tuple(argument_types))
             function = _resolve(checked.value, state)
             if function is _PV:
-                if not all(_python_argument_type(item) for item in argument_types):
+                state.constraints.extend(
+                    Constraint("python_argument", (item,)) for item in argument_types
+                )
+                if not _solve(state):
                     return Err(RizTypeError())
                 return Ok(_PV)
             if isinstance(function, TypeVariable):
@@ -298,10 +302,6 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
 
 def _binary_constraint(operation: str, left: Expr, right: Expr, env: dict[str, RizType], state: _State) -> Result[RizType]:
     return _constrain(operation, (_check(left, env, state), _check(right, env, state)), state)
-
-
-def _python_argument_type(value: RizType) -> bool:
-    return value in (_I, _B, _S, _U, _PV)
 
 
 def _constrain(operation: str, operands: tuple[Result[RizType], ...], state: _State) -> Result[RizType]:

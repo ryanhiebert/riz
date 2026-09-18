@@ -194,6 +194,8 @@ def eval(
         case StringLiteral(value):
             return Ok(String(value))
         case ProductLiteral(items):
+            if not items:
+                return Ok(Unit())
             product_values: list[Value] = []
             for item in items:
                 evaluated = eval(item, env, functions)
@@ -305,7 +307,7 @@ def _python_string_function(owner: PythonValue) -> NativeFunction:
 
 
 def _python_unit_function(owner: PythonValue) -> NativeFunction:
-    signature = FunctionType(ProductType(()), Type.UNIT)
+    signature = FunctionType(ProductType(()), ProductType(()))
 
     def invoke(arguments: Product[Value]) -> Result[Value]:
         assert not arguments.items
@@ -333,8 +335,6 @@ def _to_python(value: Value) -> object:
         return value.value
     if isinstance(value, String):
         return value.value
-    if isinstance(value, Unit):
-        return None
     if isinstance(value, PythonValue):
         return value.value
     raise AssertionError("type checker should reject this Python argument")
@@ -346,6 +346,8 @@ def _bind_pattern(pattern: Pattern, value: Value, env: dict[str, Value]) -> bool
             env[name] = value
             return True
         case ProductPattern(items):
+            if not items and isinstance(value, Unit):
+                return True
             if not isinstance(value, Product) or len(items) != len(value.items):
                 return False
             return all(
@@ -483,6 +485,8 @@ def _not_equal(left: Value, right: Value) -> Result[Value]:
 
 
 def _equals(left: Value, right: Value) -> bool:
+    if _is_unit(left) and _is_unit(right):
+        return True
     if isinstance(left, String) and isinstance(right, String):
         return left.value == right.value
     if isinstance(left, Boolean) and isinstance(right, Boolean):
@@ -492,6 +496,12 @@ def _equals(left: Value, right: Value) -> bool:
     # both numeric: equal iff equal as fractions
     a, b = _widen(_number(left)), _widen(_number(right))
     return a.numerator * b.denominator == b.numerator * a.denominator
+
+
+def _is_unit(value: Value) -> bool:
+    return isinstance(value, Unit) or (
+        isinstance(value, Product) and not value.items
+    )
 
 
 def _and(left: Value, right: Value) -> Result[Value]:

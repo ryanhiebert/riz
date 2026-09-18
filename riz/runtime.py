@@ -155,7 +155,7 @@ def _type_of(value: Value) -> RizType | None:
     if isinstance(value, String):
         return Type.STRING
     if isinstance(value, Unit):
-        return Type.UNIT
+        return ProductType(())
     if isinstance(value, Python):
         return Type.PYTHON
     if isinstance(value, PythonValue):
@@ -280,6 +280,25 @@ def test_strings():
     assert isinstance(riz.evaluate('"one" + 1'), Err)
 
 
+def test_unit_is_the_empty_product():
+    riz = Runtime()
+    assert riz.evaluate("()") == Ok(Unit())
+    assert riz.evaluate("() == ()") == Ok(Boolean(True))
+    assert riz.evaluate("value = ()") == Ok(Unit())
+    assert riz.lookup("value") == Ok(Unit())
+    assert riz.evaluate("() = ()") == Ok(Unit())
+    assert riz.define("host_empty", Product(())) == Ok(Unit())
+    assert riz.evaluate("host_empty == ()") == Ok(Boolean(True))
+
+
+def test_empty_product_is_a_regular_function_argument():
+    riz = Runtime()
+    assert riz.evaluate("fn identity(value): value") == Ok(Unit())
+    assert riz.evaluate("identity(())") == Ok(Unit())
+    assert riz.evaluate("fn empty(()): True") == Ok(Unit())
+    assert riz.evaluate("empty(())") == Ok(Boolean(True))
+
+
 def test_ratio_members():
     riz = Runtime()
     assert riz.evaluate("value = 6/4\nvalue.numerator") == Ok(Integer(3))
@@ -377,6 +396,36 @@ def test_python_calls_reject_unconverted_riz_types():
     assert isinstance(result.error, RizTypeError)
 
 
+def test_python_argument_constraint_is_inferred_in_functions():
+    riz = Runtime()
+    source = (
+        'builtins = python.module("builtins")\n'
+        'fn python_string(value): builtins.attr("str")(value).string()'
+    )
+    assert riz.evaluate(source) == Ok(Unit())
+    assert riz.evaluate("python_string(42)") == Ok(String("42"))
+    assert riz.evaluate("python_string(True)") == Ok(String("True"))
+    assert riz.evaluate('python_string("hello")') == Ok(String("hello"))
+    python_value = riz.evaluate('python.module("math")')
+    assert isinstance(python_value, Ok)
+    assert riz.define("math", python_value.value) == Ok(Unit())
+    converted = riz.evaluate("python_string(math)")
+    assert isinstance(converted, Ok)
+    assert isinstance(converted.value, String)
+    assert "module" in converted.value.value
+
+    rejected = riz.evaluate("python_string(1/2)")
+    assert isinstance(rejected, Err)
+    assert isinstance(rejected.error, RizTypeError)
+
+
+def test_unit_is_not_implicitly_converted_to_python_none():
+    riz = Runtime()
+    result = riz.evaluate('python.module("builtins").attr("str")(())')
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)
+
+
 def test_python_bridge_api_is_statically_checked():
     riz = Runtime()
     failures = (
@@ -433,7 +482,7 @@ def test_parentheses():
     assert _rendered(riz.evaluate("(2+3)*4")) == "20"  # overrides precedence
     assert _rendered(riz.evaluate("2*(3+4)")) == "14"
     assert _rendered(riz.evaluate("(6+4)/2")) == "5"
-    for bad in ("(2+3", "2+3)", "()"):  # mismatched parens are parse errors
+    for bad in ("(2+3", "2+3)"):  # mismatched parens are parse errors
         result = riz.evaluate(bad)
         assert isinstance(result, Err)
         assert isinstance(result.error, RizParseError)

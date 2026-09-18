@@ -4,9 +4,10 @@ from typing import override
 
 @dataclass(frozen=True)
 class Unit:
-    """The absence of a meaningful value — what a binding evaluates to.
+    """The compact runtime representation of the empty product.
 
-    A real value (not host ``None``); the REPL suppresses it on display.
+    A real value (not host ``None``); bindings return it and the REPL suppresses
+    it on display.
     """
 
     @override
