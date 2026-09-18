@@ -32,6 +32,8 @@ class Type(Enum):
     BOOLEAN = auto()
     STRING = auto()
     UNIT = auto()
+    PYTHON = auto()
+    PYTHON_VALUE = auto()
 
 
 @dataclass(frozen=True, eq=False)
@@ -74,8 +76,9 @@ class _State:
     functions: dict[int, FunctionType] = field(default_factory=dict)
 
 
-_I, _R, _B, _S, _U = (
-    Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.STRING, Type.UNIT
+_I, _R, _B, _S, _U, _PY, _PV = (
+    Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.STRING, Type.UNIT,
+    Type.PYTHON, Type.PYTHON_VALUE,
 )
 _NUMERIC_PAIRS = ((_I, _I), (_I, _R), (_R, _I), (_R, _R))
 
@@ -99,6 +102,9 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
     "and_or": ((_B, _B, _B), (_I, _I, _I)),
     "member:numerator": ((_R, _I),),
     "member:denominator": ((_R, _I),),
+    "member:module": ((_PY, FunctionType(ProductType((_S,)), _PV)),),
+    "member:attr": ((_PV, FunctionType(ProductType((_S,)), _PV)),),
+    "member:integer": ((_PV, FunctionType(ProductType(()), _I)),),
 }
 
 
@@ -200,6 +206,10 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
                 argument_types.append(argument_type.value)
             argument_product = ProductType(tuple(argument_types))
             function = _resolve(checked.value, state)
+            if function is _PV:
+                if not all(_python_argument_type(item) for item in argument_types):
+                    return Err(RizTypeError())
+                return Ok(_PV)
             if isinstance(function, TypeVariable):
                 output = TypeVariable()
                 inferred_function = FunctionType(argument_product, output, (), ())
@@ -285,6 +295,10 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
 
 def _binary_constraint(operation: str, left: Expr, right: Expr, env: dict[str, RizType], state: _State) -> Result[RizType]:
     return _constrain(operation, (_check(left, env, state), _check(right, env, state)), state)
+
+
+def _python_argument_type(value: RizType) -> bool:
+    return value in (_I, _B, _S, _U, _PV)
 
 
 def _constrain(operation: str, operands: tuple[Result[RizType], ...], state: _State) -> Result[RizType]:
@@ -389,13 +403,29 @@ def _solve(state: _State) -> bool:
                 if all(_same_type(first, other) for other in resolutions[1:]):
                     before = _resolve(variable, state)
                     if not _unify(variable, first, state): return False
-                    if before is not _resolve(variable, state): changed = True
+                    if not _same_type(before, _resolve(variable, state)): changed = True
     return True
 
 
 def _same_type(left: RizType, right: RizType) -> bool:
     if left is right: return True
-    return isinstance(left, ProductType) and isinstance(right, ProductType) and len(left.items) == len(right.items) and all(_same_type(a, b) for a, b in zip(left.items, right.items))
+    if isinstance(left, ProductType) and isinstance(right, ProductType):
+        return len(left.items) == len(right.items) and all(
+            _same_type(a, b) for a, b in zip(left.items, right.items)
+        )
+    if isinstance(left, FunctionType) and isinstance(right, FunctionType):
+        return (
+            _same_type(left.input, right.input)
+            and _same_type(left.output, right.output)
+            and len(left.constraints) == len(right.constraints)
+            and all(
+                a.operation == b.operation
+                and len(a.terms) == len(b.terms)
+                and all(_same_type(x, y) for x, y in zip(a.terms, b.terms))
+                for a, b in zip(left.constraints, right.constraints)
+            )
+        )
+    return False
 
 
 def _join_types(left: RizType, right: RizType, state: _State) -> RizType | None:

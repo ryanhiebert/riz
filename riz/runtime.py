@@ -25,14 +25,15 @@ from .ratio import Ratio
 from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
+from .python import Python, PythonValue, RizPythonError
 
 
 class Runtime:
     def __init__(self):
         # Bindings persist across calls (one REPL session). Two parallel envs:
         # the checker's name -> Type and the evaluator's name -> Value.
-        self._types: dict[str, RizType] = {}
-        self._values: dict[str, Value] = {}
+        self._types: dict[str, RizType] = {"python": Type.PYTHON}
+        self._values: dict[str, Value] = {"python": Python()}
 
     def define(self, name: str, value: Value) -> Result[Unit]:
         """Define a host-supplied Riz value in this interpreter.
@@ -155,6 +156,10 @@ def _type_of(value: Value) -> RizType | None:
         return Type.STRING
     if isinstance(value, Unit):
         return Type.UNIT
+    if isinstance(value, Python):
+        return Type.PYTHON
+    if isinstance(value, PythonValue):
+        return Type.PYTHON_VALUE
     if isinstance(value, Product):
         item_types: list[RizType] = []
         for item in value.items:
@@ -281,6 +286,85 @@ def test_ratio_members():
     assert riz.evaluate("value.denominator") == Ok(Integer(2))
     assert riz.evaluate("(6/4).numerator + 1") == Ok(Integer(4))
     assert riz.evaluate("fn half(): 1/2\nhalf().denominator") == Ok(Integer(2))
+
+
+def test_python_module_attribute_call_and_integer_conversion():
+    riz = Runtime()
+    source = 'python.module("math").attr("isqrt")(1764).integer()'
+    assert riz.evaluate(source) == Ok(Integer(42))
+    assert riz.evaluate('python.module("builtins").attr("len")("riz").integer()') == Ok(
+        Integer(3)
+    )
+    assert riz.evaluate('python.module("builtins").attr("int")(False).integer()') == Ok(
+        Integer(0)
+    )
+
+
+def test_python_calls_accept_python_values_as_arguments():
+    riz = Runtime()
+    source = (
+        'builtins = python.module("builtins")\n'
+        'sys = python.module("sys")\n'
+        'builtins.attr("len")(sys.attr("path")).integer()'
+    )
+    result = riz.evaluate(source)
+    assert isinstance(result, Ok)
+    assert isinstance(result.value, Integer)
+
+
+def test_python_values_stay_wrapped_until_converted():
+    riz = Runtime()
+    result = riz.evaluate('python.module("math").attr("isqrt")(9)')
+    assert isinstance(result, Ok)
+    assert isinstance(result.value, PythonValue)
+    assert result.value.value == 3
+    assert str(result.value) == "<python value>"
+
+
+def test_python_bridge_values_do_not_expose_implementation_details():
+    riz = Runtime()
+    assert _rendered(riz.evaluate("python")) == "<python>"
+    assert _rendered(riz.evaluate("python.module")) == "<fn python.module>"
+    assert _rendered(riz.evaluate('python.module("math")')) == "<python value>"
+    assert _rendered(
+        riz.evaluate('python.module("math").attr("isqrt")')
+    ) == "<python value>"
+
+
+def test_python_interop_errors_are_riz_errors():
+    riz = Runtime()
+    failures = (
+        'python.module("module_that_does_not_exist")',
+        'python.module("math").attr("missing")',
+        'python.module("math")(1)',
+        'python.module("math").attr("isqrt")(-1)',
+        'python.module("builtins").attr("str")(42).integer()',
+    )
+    for source in failures:
+        result = riz.evaluate(source)
+        assert isinstance(result, Err)
+        assert isinstance(result.error, RizPythonError)
+
+
+def test_python_calls_reject_unconverted_riz_types():
+    riz = Runtime()
+    result = riz.evaluate('python.module("builtins").attr("str")(1/2)')
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)
+
+
+def test_python_bridge_api_is_statically_checked():
+    riz = Runtime()
+    failures = (
+        "python.missing",
+        "python.module(1)",
+        'python.module("math").attr(1)',
+        'python.module("math").integer(1)',
+    )
+    for source in failures:
+        result = riz.evaluate(source)
+        assert isinstance(result, Err)
+        assert isinstance(result.error, RizTypeError)
 
 
 def test_ratio_member_type_inference_in_functions():

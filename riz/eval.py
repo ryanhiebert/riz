@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import override
+import importlib
+from typing import cast, override
 
 from .boolean import Boolean
 from .integer import Integer
-from .check import FunctionType
+from .check import FunctionType, ProductType, Type
 from .parse import (
     Add,
     And,
@@ -46,6 +47,7 @@ from .product import Product
 from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
+from .python import Python, PythonValue, RizPythonError
 
 
 # A function value: its parameters, its body, and a *value-captured* snapshot of
@@ -73,10 +75,10 @@ class NativeFunction:
 
     @override
     def __str__(self) -> str:
-        return f"<native fn {self.name}>"
+        return f"<fn {self.name}>"
 
 
-type Value = Integer | Ratio | Boolean | String | Unit | Product[Value] | Closure | NativeFunction
+type Value = Integer | Ratio | Boolean | String | Unit | Python | PythonValue | Product[Value] | Closure | NativeFunction
 type Numeric = Integer | Ratio
 
 
@@ -106,12 +108,18 @@ def eval(
             evaluated = eval(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
-            if not isinstance(evaluated.value, Ratio):
-                raise AssertionError("type checker should reject member access")
-            if name == "numerator":
-                return Ok(Integer(evaluated.value.numerator))
-            if name == "denominator":
-                return Ok(Integer(evaluated.value.denominator))
+            owner = evaluated.value
+            if isinstance(owner, Ratio):
+                if name == "numerator":
+                    return Ok(Integer(owner.numerator))
+                if name == "denominator":
+                    return Ok(Integer(owner.denominator))
+            if isinstance(owner, Python) and name == "module":
+                return Ok(_python_module_function())
+            if isinstance(owner, PythonValue) and name == "attr":
+                return Ok(_python_attr_function(owner))
+            if isinstance(owner, PythonValue) and name == "integer":
+                return Ok(_python_integer_function(owner))
             raise AssertionError("type checker should reject unknown members")
         case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the
@@ -131,7 +139,7 @@ def eval(
             if isinstance(evaluated, Err):
                 return evaluated
             function = evaluated.value
-            if not isinstance(function, (Closure, NativeFunction)):
+            if not isinstance(function, (Closure, NativeFunction, PythonValue)):
                 raise AssertionError("type checker should reject calling a non-function")
             values: list[Value] = []
             for argument in arguments:
@@ -140,6 +148,8 @@ def eval(
                     return evaluated_argument
                 values.append(evaluated_argument.value)
             argument = Product(tuple(values))
+            if isinstance(function, PythonValue):
+                return _call_python(function, argument)
             return call(function, argument)
         case Conditional(condition, consequent, alternative):
             evaluated = eval(condition, env, functions)
@@ -222,6 +232,70 @@ def call(function: Closure | NativeFunction, argument: Product[Value]) -> Result
     if not _bind_pattern(function.parameter, argument, frame):
         raise AssertionError("type checker should reject a mismatched pattern")
     return eval(function.body, frame, function.functions)
+
+
+def _python_module_function() -> NativeFunction:
+    signature = FunctionType(ProductType((Type.STRING,)), Type.PYTHON_VALUE)
+
+    def invoke(arguments: Product[Value]) -> Result[Value]:
+        (name,) = arguments.items
+        assert isinstance(name, String)
+        try:
+            return Ok(PythonValue(importlib.import_module(name.value)))
+        except Exception as error:
+            return Err(RizPythonError(error))
+
+    return NativeFunction("python.module", signature, invoke)
+
+
+def _python_attr_function(owner: PythonValue) -> NativeFunction:
+    signature = FunctionType(ProductType((Type.STRING,)), Type.PYTHON_VALUE)
+
+    def invoke(arguments: Product[Value]) -> Result[Value]:
+        (name,) = arguments.items
+        assert isinstance(name, String)
+        try:
+            return Ok(PythonValue(cast(object, getattr(owner.value, name.value))))
+        except Exception as error:
+            return Err(RizPythonError(error))
+
+    return NativeFunction("PythonValue.attr", signature, invoke)
+
+
+def _python_integer_function(owner: PythonValue) -> NativeFunction:
+    signature = FunctionType(ProductType(()), Type.INTEGER)
+
+    def invoke(arguments: Product[Value]) -> Result[Value]:
+        assert not arguments.items
+        if type(owner.value) is not int:
+            return Err(RizPythonError(TypeError("Python value is not an int")))
+        return Ok(Integer(owner.value))
+
+    return NativeFunction("PythonValue.integer", signature, invoke)
+
+
+def _call_python(function: PythonValue, arguments: Product[Value]) -> Result[Value]:
+    try:
+        converted = tuple(_to_python(argument) for argument in arguments.items)
+        if not callable(function.value):
+            return Err(RizPythonError(TypeError("Python value is not callable")))
+        return Ok(PythonValue(function.value(*converted)))
+    except Exception as error:
+        return Err(RizPythonError(error))
+
+
+def _to_python(value: Value) -> object:
+    if isinstance(value, Integer):
+        return value.value
+    if isinstance(value, Boolean):
+        return value.value
+    if isinstance(value, String):
+        return value.value
+    if isinstance(value, Unit):
+        return None
+    if isinstance(value, PythonValue):
+        return value.value
+    raise AssertionError("type checker should reject this Python argument")
 
 
 def _bind_pattern(pattern: Pattern, value: Value, env: dict[str, Value]) -> bool:
