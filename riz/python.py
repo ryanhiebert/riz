@@ -17,7 +17,7 @@ class Python:
 class PythonValue:
     """An opaque Python object; Riz can only use its explicit bridge API."""
 
-    value: object
+    value: object | None
 
     @override
     def __str__(self) -> str:

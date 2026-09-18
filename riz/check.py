@@ -105,6 +105,9 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
     "member:module": ((_PY, FunctionType(ProductType((_S,)), _PV)),),
     "member:attr": ((_PV, FunctionType(ProductType((_S,)), _PV)),),
     "member:integer": ((_PV, FunctionType(ProductType(()), _I)),),
+    "member:boolean": ((_PV, FunctionType(ProductType(()), _B)),),
+    "member:string": ((_PV, FunctionType(ProductType(()), _S)),),
+    "member:unit": ((_PV, FunctionType(ProductType(()), _U)),),
 }
 
 

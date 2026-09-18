@@ -300,6 +300,30 @@ def test_python_module_attribute_call_and_integer_conversion():
     )
 
 
+def test_python_value_conversions_are_explicit_and_strict():
+    riz = Runtime()
+    assert riz.evaluate(
+        'python.module("builtins").attr("bool")(1).boolean()'
+    ) == Ok(Boolean(True))
+    assert riz.evaluate(
+        'python.module("builtins").attr("str")(42).string()'
+    ) == Ok(String("42"))
+    assert riz.evaluate(
+        'python.module("sys").attr("stdout").attr("flush")().unit()'
+    ) == Ok(Unit())
+
+    failures = (
+        'python.module("builtins").attr("bool")(1).integer()',
+        'python.module("builtins").attr("int")(1).boolean()',
+        'python.module("builtins").attr("int")(1).string()',
+        'python.module("builtins").attr("str")(1).unit()',
+    )
+    for source in failures:
+        result = riz.evaluate(source)
+        assert isinstance(result, Err)
+        assert isinstance(result.error, RizPythonError)
+
+
 def test_python_calls_accept_python_values_as_arguments():
     riz = Runtime()
     source = (

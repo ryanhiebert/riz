@@ -120,6 +120,12 @@ def eval(
                 return Ok(_python_attr_function(owner))
             if isinstance(owner, PythonValue) and name == "integer":
                 return Ok(_python_integer_function(owner))
+            if isinstance(owner, PythonValue) and name == "boolean":
+                return Ok(_python_boolean_function(owner))
+            if isinstance(owner, PythonValue) and name == "string":
+                return Ok(_python_string_function(owner))
+            if isinstance(owner, PythonValue) and name == "unit":
+                return Ok(_python_unit_function(owner))
             raise AssertionError("type checker should reject unknown members")
         case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the
@@ -272,6 +278,42 @@ def _python_integer_function(owner: PythonValue) -> NativeFunction:
         return Ok(Integer(owner.value))
 
     return NativeFunction("PythonValue.integer", signature, invoke)
+
+
+def _python_boolean_function(owner: PythonValue) -> NativeFunction:
+    signature = FunctionType(ProductType(()), Type.BOOLEAN)
+
+    def invoke(arguments: Product[Value]) -> Result[Value]:
+        assert not arguments.items
+        if type(owner.value) is not bool:
+            return Err(RizPythonError(TypeError("Python value is not a bool")))
+        return Ok(Boolean(owner.value))
+
+    return NativeFunction("PythonValue.boolean", signature, invoke)
+
+
+def _python_string_function(owner: PythonValue) -> NativeFunction:
+    signature = FunctionType(ProductType(()), Type.STRING)
+
+    def invoke(arguments: Product[Value]) -> Result[Value]:
+        assert not arguments.items
+        if type(owner.value) is not str:
+            return Err(RizPythonError(TypeError("Python value is not a str")))
+        return Ok(String(owner.value))
+
+    return NativeFunction("PythonValue.string", signature, invoke)
+
+
+def _python_unit_function(owner: PythonValue) -> NativeFunction:
+    signature = FunctionType(ProductType(()), Type.UNIT)
+
+    def invoke(arguments: Product[Value]) -> Result[Value]:
+        assert not arguments.items
+        if owner.value is not None:
+            return Err(RizPythonError(TypeError("Python value is not None")))
+        return Ok(Unit())
+
+    return NativeFunction("PythonValue.unit", signature, invoke)
 
 
 def _call_python(function: PythonValue, arguments: Product[Value]) -> Result[Value]:

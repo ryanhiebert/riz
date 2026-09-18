@@ -14,6 +14,21 @@ def test_public_embedding_api_supports_strings():
     assert runtime.evaluate("module_name") == riz.Ok(riz.String("machine"))
 
 
+def test_host_can_expose_an_existing_python_object():
+    class Robot:
+        def __init__(self):
+            self.position: int = 0
+
+        def move(self, distance: int) -> None:
+            self.position += distance
+
+    robot = Robot()
+    runtime = riz.Runtime()
+    assert runtime.define("robot", riz.PythonValue(robot)) == riz.Ok(riz.Unit())
+    assert runtime.evaluate('robot.attr("move")(10).unit()') == riz.Ok(riz.Unit())
+    assert robot.position == 10
+
+
 def test_host_products_have_structural_types():
     runtime = riz.Runtime()
     point = riz.Product((riz.Integer(20), riz.Integer(22)))
