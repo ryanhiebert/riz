@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 import importlib
 from typing import cast, override
 
 from .boolean import Boolean
 from .integer import Integer
-from .check import FunctionType, ProductType, Type
+from .check import FunctionType, ModuleType, ProductType, RizTypeError, Type
 from .parse import (
     Add,
     And,
@@ -40,6 +40,7 @@ from .parse import (
     ProductPattern,
     StringLiteral,
     Subtract,
+    Use,
     Variable,
     WhileLoop,
 )
@@ -48,7 +49,7 @@ from .product import Product
 from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
-from .python import Python, PythonValue, RizPythonError
+from .python import PythonValue, RizPythonError
 
 
 # A function value: its parameters, its body, and a *value-captured* snapshot of
@@ -79,7 +80,21 @@ class NativeFunction:
         return f"<fn {self.name}>"
 
 
-type Value = Integer | Ratio | Boolean | String | Unit | Python | PythonValue | Product[Value] | Closure | NativeFunction
+@dataclass(eq=False)
+class ModuleValue:
+    name: str
+    interface: ModuleType
+    loader: Callable[[], Result[Mapping[str, Value]]]
+    loaded: dict[str, Value] | None = None
+    error: object | None = None
+    projections: dict[str, ModuleValue] = field(default_factory=dict)
+
+    @override
+    def __str__(self) -> str:
+        return f"<module {self.name}>"
+
+
+type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | Product[Value] | Closure | NativeFunction | ModuleValue
 type Numeric = Integer | Ratio
 
 
@@ -98,18 +113,21 @@ def eval(
             evaluated = eval(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated  # a failed binding leaves the name untouched
-            if not _bind_pattern(target, evaluated.value, env):
-                raise AssertionError("type checker should reject a mismatched pattern")
+            bound = _bind_pattern(target, evaluated.value, env)
+            if isinstance(bound, Err):
+                return bound
             return Ok(Unit())
         case Variable(name):
             if name not in env:
                 raise AssertionError("type checker should reject unbound names")
             return Ok(env[name])
+        case Use():
+            return Ok(env["use"])
         case Member(value, name):
             evaluated = eval(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
-            return Ok(_member(evaluated.value, name))
+            return _member(evaluated.value, name)
         case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the
             # function's own name to the closure *inside* its captured env, so the
@@ -220,12 +238,13 @@ def call(function: Closure | NativeFunction, argument: Product[Value]) -> Result
     if isinstance(function, NativeFunction):
         return function.callback(argument)
     frame = dict(function.env)
-    if not _bind_pattern(function.parameter, argument, frame):
-        raise AssertionError("type checker should reject a mismatched pattern")
+    bound = _bind_pattern(function.parameter, argument, frame)
+    if isinstance(bound, Err):
+        return bound
     return eval(function.body, frame, function.functions)
 
 
-def _python_module_function() -> NativeFunction:
+def python_module_function() -> NativeFunction:
     signature = FunctionType(ProductType((Type.STRING,)), Type.PYTHON_VALUE)
 
     def invoke(arguments: Product[Value]) -> Result[Value]:
@@ -323,45 +342,83 @@ def _to_python(value: Value) -> object:
     raise AssertionError("type checker should reject this Python argument")
 
 
-def _bind_pattern(pattern: Pattern, value: Value, env: dict[str, Value]) -> bool:
+def _bind_pattern(pattern: Pattern, value: Value, env: dict[str, Value]) -> Result[None]:
     match pattern:
         case Bind(name):
             env[name] = value
-            return True
+            return Ok(None)
         case ProductPattern(items):
             if not items and isinstance(value, Unit):
-                return True
+                return Ok(None)
             if not isinstance(value, Product) or len(items) != len(value.items):
-                return False
-            return all(
-                _bind_pattern(item, item_value, env)
-                for item, item_value in zip(items, value.items)
-            )
+                return Err(RizTypeError())
+            for item, item_value in zip(items, value.items):
+                bound = _bind_pattern(item, item_value, env)
+                if isinstance(bound, Err):
+                    return bound
+            return Ok(None)
         case NamedPattern(names):
+            members: list[tuple[str, Value]] = []
             for name in names:
-                env[name] = _member(value, name)
-            return True
+                member = _member(value, name)
+                if isinstance(member, Err):
+                    return member
+                members.append((name, member.value))
+            env.update(members)
+            return Ok(None)
 
 
-def _member(owner: Value, name: str) -> Value:
+def _member(owner: Value, name: str) -> Result[Value]:
+    if isinstance(owner, ModuleValue):
+        member_type = dict(owner.interface.members)[name]
+        if isinstance(member_type, ModuleType):
+            if name not in owner.projections:
+                def load_projection() -> Result[Mapping[str, Value]]:
+                    loaded = _load_module(owner)
+                    if isinstance(loaded, Err):
+                        return loaded
+                    child = loaded.value[name]
+                    if not isinstance(child, ModuleValue):
+                        return Err(RizTypeError())
+                    return _load_module(child)
+
+                owner.projections[name] = ModuleValue(
+                    f"{owner.name}.{name}", member_type, load_projection
+                )
+            return Ok(owner.projections[name])
+        loaded = _load_module(owner)
+        if isinstance(loaded, Err):
+            return loaded
+        return Ok(loaded.value[name])
     if isinstance(owner, Ratio):
         if name == "numerator":
-            return Integer(owner.numerator)
+            return Ok(Integer(owner.numerator))
         if name == "denominator":
-            return Integer(owner.denominator)
-    if isinstance(owner, Python) and name == "module":
-        return _python_module_function()
+            return Ok(Integer(owner.denominator))
     if isinstance(owner, PythonValue) and name == "attr":
-        return _python_attr_function(owner)
+        return Ok(_python_attr_function(owner))
     if isinstance(owner, PythonValue) and name == "integer":
-        return _python_integer_function(owner)
+        return Ok(_python_integer_function(owner))
     if isinstance(owner, PythonValue) and name == "boolean":
-        return _python_boolean_function(owner)
+        return Ok(_python_boolean_function(owner))
     if isinstance(owner, PythonValue) and name == "string":
-        return _python_string_function(owner)
+        return Ok(_python_string_function(owner))
     if isinstance(owner, PythonValue) and name == "unit":
-        return _python_unit_function(owner)
+        return Ok(_python_unit_function(owner))
     raise AssertionError("type checker should reject unknown members")
+
+
+def _load_module(module: ModuleValue) -> Result[dict[str, Value]]:
+    if module.loaded is not None:
+        return Ok(module.loaded)
+    if module.error is not None:
+        return Err(module.error)
+    loaded = module.loader()
+    if isinstance(loaded, Err):
+        module.error = loaded.error
+        return loaded
+    module.loaded = dict(loaded.value)
+    return Ok(module.loaded)
 
 
 def _unary(

@@ -13,7 +13,7 @@ from .parse import (
     Add, And, Bind, Binding, Block, BoolLiteral, Call, Conditional, Divide,
     Equal, Expr, Function, GreaterOrEqual, GreaterThan, IntLiteral, LessOrEqual,
     LessThan, Member, Multiply, NamedPattern, Negate, Not, NotEqual, Or, Pattern, ProductLiteral,
-    ProductPattern, StringLiteral, Subtract, Variable, WhileLoop,
+    ProductPattern, StringLiteral, Subtract, Use, Variable, WhileLoop,
 )
 from .result import Err, Ok, Result
 
@@ -31,7 +31,6 @@ class Type(Enum):
     RATIONAL = auto()
     BOOLEAN = auto()
     STRING = auto()
-    PYTHON = auto()
     PYTHON_VALUE = auto()
 
 
@@ -52,6 +51,13 @@ class ProductType:
 
 
 @dataclass(frozen=True)
+class ModuleType:
+    """A module's statically known exported interface."""
+
+    members: tuple[tuple[str, RizType], ...]
+
+
+@dataclass(frozen=True)
 class Constraint:
     operation: str
     terms: tuple[RizType, ...]
@@ -65,7 +71,7 @@ class FunctionType:
     variables: tuple[TypeVariable, ...] = ()
 
 
-type RizType = Type | TypeVariable | ProductType | FunctionType | _NeverReturns
+type RizType = Type | TypeVariable | ProductType | ModuleType | FunctionType | _NeverReturns
 
 
 @dataclass
@@ -75,9 +81,9 @@ class _State:
     functions: dict[int, FunctionType] = field(default_factory=dict)
 
 
-_I, _R, _B, _S, _PY, _PV = (
+_I, _R, _B, _S, _PV = (
     Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.STRING,
-    Type.PYTHON, Type.PYTHON_VALUE,
+    Type.PYTHON_VALUE,
 )
 _U = ProductType(())
 _NUMERIC_PAIRS = ((_I, _I), (_I, _R), (_R, _I), (_R, _R))
@@ -102,7 +108,6 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
     "and_or": ((_B, _B, _B), (_I, _I, _I)),
     "member:numerator": ((_R, _I),),
     "member:denominator": ((_R, _I),),
-    "member:module": ((_PY, FunctionType(ProductType((_S,)), _PV)),),
     "member:attr": ((_PV, FunctionType(ProductType((_S,)), _PV)),),
     "member:integer": ((_PV, FunctionType(ProductType(()), _I)),),
     "member:boolean": ((_PV, FunctionType(ProductType(()), _B)),),
@@ -155,8 +160,17 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
             return Ok(_U)
         case Variable(name):
             return Err(RizNameError()) if name not in env else Ok(env[name])
+        case Use():
+            return Err(RizNameError()) if "use" not in env else Ok(env["use"])
         case Member(value, name):
-            return _constrain(f"member:{name}", (_check(value, env, state),), state)
+            owner = _check(value, env, state)
+            if isinstance(owner, Err):
+                return owner
+            resolved = _resolve(owner.value, state)
+            if isinstance(resolved, ModuleType):
+                members = dict(resolved.members)
+                return Err(RizNameError()) if name not in members else Ok(members[name])
+            return _constrain(f"member:{name}", (Ok(owner.value),), state)
         case Function(name, parameter, body):
             local = _State(functions=state.functions)
             input_type = _pattern_type(parameter)
@@ -339,6 +353,13 @@ def _bind_pattern(
                 _bind_pattern(p, t, env, state) for p, t in zip(items, value.items)
             )
         case NamedPattern(names):
+            resolved = _resolve(value, state)
+            if isinstance(resolved, ModuleType):
+                members = dict(resolved.members)
+                if any(name not in members for name in names):
+                    return False
+                env.update((name, members[name]) for name in names)
+                return True
             for name in names:
                 member = _constrain(f"member:{name}", (Ok(value),), state)
                 if isinstance(member, Err):
@@ -354,6 +375,8 @@ def _resolve(value: RizType, state: _State) -> RizType:
         return resolved
     if isinstance(value, ProductType):
         return ProductType(tuple(_resolve(item, state) for item in value.items))
+    if isinstance(value, ModuleType):
+        return ModuleType(tuple((name, _resolve(item, state)) for name, item in value.members))
     if isinstance(value, FunctionType):
         input_type = _resolve(value.input, state)
         assert isinstance(input_type, ProductType)
@@ -371,6 +394,8 @@ def _occurs(variable: TypeVariable, value: RizType, state: _State) -> bool:
     if value is variable: return True
     if isinstance(value, ProductType):
         return any(_occurs(variable, item, state) for item in value.items)
+    if isinstance(value, ModuleType):
+        return any(_occurs(variable, item, state) for _, item in value.members)
     if isinstance(value, FunctionType):
         return _occurs(variable, value.input, state) or _occurs(variable, value.output, state)
     return False
@@ -394,6 +419,14 @@ def _unify(left: RizType, right: RizType, state: _State) -> bool:
         )
     if isinstance(left, ProductType) and isinstance(right, ProductType):
         return len(left.items) == len(right.items) and all(_unify(a, b, state) for a, b in zip(left.items, right.items))
+    if isinstance(left, ModuleType) and isinstance(right, ModuleType):
+        return (
+            tuple(name for name, _ in left.members) == tuple(name for name, _ in right.members)
+            and all(
+                _unify(a, b, state)
+                for (_, a), (_, b) in zip(left.members, right.members)
+            )
+        )
     return left is right
 
 
@@ -428,6 +461,14 @@ def _same_type(left: RizType, right: RizType) -> bool:
     if isinstance(left, ProductType) and isinstance(right, ProductType):
         return len(left.items) == len(right.items) and all(
             _same_type(a, b) for a, b in zip(left.items, right.items)
+        )
+    if isinstance(left, ModuleType) and isinstance(right, ModuleType):
+        return (
+            tuple(name for name, _ in left.members) == tuple(name for name, _ in right.members)
+            and all(
+                _same_type(a, b)
+                for (_, a), (_, b) in zip(left.members, right.members)
+            )
         )
     if isinstance(left, FunctionType) and isinstance(right, FunctionType):
         return (
@@ -467,6 +508,8 @@ def _collect_variables(value: RizType, found: list[TypeVariable]) -> None:
         if value not in found: found.append(value)
     elif isinstance(value, ProductType):
         for item in value.items: _collect_variables(item, found)
+    elif isinstance(value, ModuleType):
+        for _, item in value.members: _collect_variables(item, found)
     elif isinstance(value, FunctionType):
         nested: list[TypeVariable] = []
         _collect_variables(value.input, nested)
@@ -489,6 +532,8 @@ def _variables_in(values: tuple[RizType, ...], constraints: tuple[Constraint, ..
 def _replace(value: RizType, replacements: dict[TypeVariable, TypeVariable]) -> RizType:
     if isinstance(value, TypeVariable): return replacements.get(value, value)
     if isinstance(value, ProductType): return ProductType(tuple(_replace(item, replacements) for item in value.items))
+    if isinstance(value, ModuleType):
+        return ModuleType(tuple((name, _replace(item, replacements)) for name, item in value.members))
     if isinstance(value, FunctionType):
         input_type = _replace(value.input, replacements)
         assert isinstance(input_type, ProductType)

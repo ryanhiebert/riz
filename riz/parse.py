@@ -61,6 +61,11 @@ class Variable:
 
 
 @dataclass(frozen=True)
+class Use:
+    """The statically resolved root module namespace."""
+
+
+@dataclass(frozen=True)
 class Negate:
     operand: Expr
 
@@ -231,6 +236,7 @@ Expr = (
     | StringLiteral
     | BoolLiteral
     | Variable
+    | Use
     | ProductLiteral
     | Binding
     | Function
@@ -359,6 +365,8 @@ class _Parser:
                 return self._while()
             if token.name == "fn":
                 return self._function()
+            if token.name == "use":
+                return Ok(Use())
             if token.name == "else":
                 return Err(RizParseError())  # 'else' with no matching 'if'
             return Ok(Variable(token.name))

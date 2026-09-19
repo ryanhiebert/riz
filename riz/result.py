@@ -8,11 +8,15 @@ VM threads error unions.
 """
 
 from dataclasses import dataclass
+from typing import Generic, TypeVar
+
+
+T_co = TypeVar("T_co", covariant=True)
 
 
 @dataclass(frozen=True)
-class Ok[T]:
-    value: T
+class Ok(Generic[T_co]):
+    value: T_co
 
 
 @dataclass(frozen=True)

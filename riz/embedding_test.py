@@ -1,3 +1,5 @@
+from collections.abc import Mapping
+
 import riz
 
 
@@ -166,3 +168,113 @@ def test_nested_closures_retain_their_inferred_types_for_host_calls():
     assert runtime.call(
         made.value, riz.Product((riz.Integer(32),))
     ) == riz.Ok(riz.Integer(42))
+
+
+def test_registered_modules_are_static_lazy_and_cached():
+    runtime = riz.Runtime()
+    loads = 0
+    interface = riz.ModuleType((("answer", riz.Type.INTEGER),))
+
+    def load(runtime: riz.Runtime) -> riz.Result[Mapping[str, riz.Value]]:
+        nonlocal loads
+        del runtime
+        loads += 1
+        return riz.Ok({"answer": riz.Integer(42)})
+
+    assert runtime.register_module("tools", interface, load) == riz.Ok(riz.Unit())
+    assert runtime.evaluate("{tools} = use") == riz.Ok(riz.Unit())
+    assert loads == 0
+    assert runtime.evaluate("{answer} = tools\nanswer") == riz.Ok(riz.Integer(42))
+    assert runtime.evaluate("tools.answer") == riz.Ok(riz.Integer(42))
+    assert loads == 1
+
+
+def test_module_use_is_lexically_scoped():
+    runtime = riz.Runtime()
+    interface = riz.ModuleType((("answer", riz.Type.INTEGER),))
+    assert runtime.register_module(
+        "tools", interface, lambda runtime: riz.Ok({"answer": riz.Integer(42)})
+    ) == riz.Ok(riz.Unit())
+    source = "fn get_answer():\n  {answer} = use.tools\n  answer"
+    assert runtime.evaluate(source) == riz.Ok(riz.Unit())
+    assert runtime.evaluate("get_answer()") == riz.Ok(riz.Integer(42))
+    assert isinstance(runtime.lookup("answer"), riz.Err)
+
+
+def test_module_traversal_does_not_initialize_modules():
+    runtime = riz.Runtime()
+    parent_loads = 0
+    child_loads = 0
+    child_interface = riz.ModuleType((("answer", riz.Type.INTEGER),))
+    parent_interface = riz.ModuleType((("child", child_interface),))
+
+    def load_child() -> riz.Result[Mapping[str, riz.Value]]:
+        nonlocal child_loads
+        child_loads += 1
+        return riz.Ok({"answer": riz.Integer(42)})
+
+    child = riz.ModuleValue("parent.child", child_interface, load_child)
+
+    def load_parent(runtime: riz.Runtime) -> riz.Result[Mapping[str, riz.Value]]:
+        nonlocal parent_loads
+        del runtime
+        parent_loads += 1
+        return riz.Ok({"child": child})
+
+    assert runtime.register_module("parent", parent_interface, load_parent) == riz.Ok(
+        riz.Unit()
+    )
+    assert runtime.evaluate("{child} = use.parent") == riz.Ok(riz.Unit())
+    assert (parent_loads, child_loads) == (0, 0)
+    assert runtime.evaluate("child.answer") == riz.Ok(riz.Integer(42))
+    assert (parent_loads, child_loads) == (1, 1)
+
+
+def test_unknown_module_members_fail_before_loading():
+    runtime = riz.Runtime()
+    loads = 0
+    interface = riz.ModuleType((("answer", riz.Type.INTEGER),))
+
+    def load(runtime: riz.Runtime) -> riz.Result[Mapping[str, riz.Value]]:
+        nonlocal loads
+        del runtime
+        loads += 1
+        return riz.Ok({"answer": riz.Integer(42)})
+
+    assert runtime.register_module("tools", interface, load) == riz.Ok(riz.Unit())
+    result = runtime.evaluate("use.tools.missing")
+    assert isinstance(result, riz.Err)
+    assert loads == 0
+
+
+def test_module_loader_must_match_its_interface():
+    runtime = riz.Runtime()
+    interface = riz.ModuleType((("answer", riz.Type.INTEGER),))
+    assert runtime.register_module(
+        "broken", interface, lambda runtime: riz.Ok({"answer": riz.Boolean(True)})
+    ) == riz.Ok(riz.Unit())
+    result = runtime.evaluate("use.broken.answer")
+    assert isinstance(result, riz.Err)
+
+
+def test_modules_can_export_checked_native_functions():
+    runtime = riz.Runtime()
+    signature = riz.FunctionType(
+        riz.ProductType((riz.Type.INTEGER,)), riz.Type.INTEGER
+    )
+    interface = riz.ModuleType((("increment", signature),))
+
+    def increment(
+        runtime: riz.Runtime, arguments: riz.Product[riz.Value]
+    ) -> riz.Result[riz.Value]:
+        del runtime
+        (value,) = arguments.items
+        assert isinstance(value, riz.Integer)
+        return riz.Ok(riz.Integer(value.value + 1))
+
+    function = runtime.native_function("increment", signature, increment)
+    assert isinstance(function, riz.Ok)
+    assert runtime.register_module(
+        "tools", interface, lambda runtime: riz.Ok({"increment": function.value})
+    ) == riz.Ok(riz.Unit())
+    assert runtime.evaluate("use.tools.increment(41)") == riz.Ok(riz.Integer(42))

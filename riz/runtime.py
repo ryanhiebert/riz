@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from .boolean import Boolean
 from .check import (
     FunctionType,
+    ModuleType,
     ProductType,
     RizNameError,
     RizType,
@@ -16,7 +17,16 @@ from .check import (
     check_call_type,
     types_compatible,
 )
-from .eval import Closure, NativeFunction, RizDivisionByZeroError, Value, call, eval
+from .eval import (
+    Closure,
+    ModuleValue,
+    NativeFunction,
+    RizDivisionByZeroError,
+    Value,
+    call,
+    eval,
+    python_module_function,
+)
 from .integer import Integer
 from .lex import IdentifierToken, lex
 from .parse import RizParseError, parse
@@ -25,15 +35,62 @@ from .ratio import Ratio
 from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
-from .python import Python, PythonValue, RizPythonError
+from .python import PythonValue, RizPythonError
 
 
 class Runtime:
     def __init__(self):
         # Bindings persist across calls (one REPL session). Two parallel envs:
         # the checker's name -> Type and the evaluator's name -> Value.
-        self._types: dict[str, RizType] = {"python": Type.PYTHON}
-        self._values: dict[str, Value] = {"python": Python()}
+        self._modules: dict[str, ModuleValue] = {}
+        self._types: dict[str, RizType] = {"use": ModuleType(())}
+        self._values: dict[str, Value] = {"use": self._module_root()}
+        python_module_type = FunctionType(
+            ProductType((Type.STRING,)), Type.PYTHON_VALUE
+        )
+        registered = self.register_module(
+            "python",
+            ModuleType((("module", python_module_type),)),
+            lambda runtime: Ok({"module": python_module_function()}),
+        )
+        assert isinstance(registered, Ok)
+
+    def register_module(
+        self,
+        name: str,
+        interface: ModuleType,
+        loader: Callable[[Runtime], Result[Mapping[str, Value]]],
+    ) -> Result[Unit]:
+        """Register one typed root module with a lazy, cached loader."""
+        if not _is_bindable_name(name) or not _is_module_interface(interface):
+            return Err(RizTypeError())
+
+        def load() -> Result[Mapping[str, Value]]:
+            result = loader(self)
+            if isinstance(result, Err):
+                return result
+            expected = dict(interface.members)
+            if set(result.value) != set(expected):
+                return Err(RizTypeError())
+            for member, value in result.value.items():
+                if not _matches_type(value, expected[member]):
+                    return Err(RizTypeError())
+            return result
+
+        self._modules[name] = ModuleValue(name, interface, load)
+        self._refresh_module_root()
+        return Ok(Unit())
+
+    def _module_root(self) -> ModuleValue:
+        interface = ModuleType(
+            tuple((name, module.interface) for name, module in self._modules.items())
+        )
+        return ModuleValue("use", interface, lambda: Ok(dict(self._modules)))
+
+    def _refresh_module_root(self) -> None:
+        root = self._module_root()
+        self._types["use"] = root.interface
+        self._values["use"] = root
 
     def define(self, name: str, value: Value) -> Result[Unit]:
         """Define a host-supplied Riz value in this interpreter.
@@ -69,6 +126,20 @@ class Runtime:
         Riz itself. Their declared signature is checked on registration and on
         every returned value, keeping host code from violating Riz's type rules.
         """
+        function = self.native_function(name, signature, callback)
+        if isinstance(function, Err):
+            return function
+        self._types[name] = signature
+        self._values[name] = function.value
+        return Ok(Unit())
+
+    def native_function(
+        self,
+        name: str,
+        signature: FunctionType,
+        callback: Callable[[Runtime, Product[Value]], Result[Value]],
+    ) -> Result[NativeFunction]:
+        """Create a checked native function value without globally binding it."""
         if not _is_bindable_name(name) or not _is_concrete_function(signature):
             return Err(RizTypeError())
 
@@ -80,17 +151,18 @@ class Runtime:
                 return Err(RizTypeError())
             return result
 
-        function = NativeFunction(name, signature, invoke)
-        self._types[name] = signature
-        self._values[name] = function
-        return Ok(Unit())
+        return Ok(NativeFunction(name, signature, invoke))
 
     def load(self, extension: Extension) -> Result[Unit]:
         """Load an extension atomically into this interpreter."""
-        types, values = dict(self._types), dict(self._values)
+        types, values, modules = (
+            dict(self._types),
+            dict(self._values),
+            dict(self._modules),
+        )
         result = extension(self)
         if isinstance(result, Err):
-            self._types, self._values = types, values
+            self._types, self._values, self._modules = types, values, modules
             return result
         return Ok(Unit())
 
@@ -132,7 +204,7 @@ class Runtime:
         return evaluated
 
 
-_RESERVED_NAMES = {"True", "False", "if", "else", "while", "fn"}
+_RESERVED_NAMES = {"True", "False", "if", "else", "while", "fn", "use"}
 
 
 def _is_bindable_name(name: str) -> bool:
@@ -156,8 +228,6 @@ def _type_of(value: Value) -> RizType | None:
         return Type.STRING
     if isinstance(value, Unit):
         return ProductType(())
-    if isinstance(value, Python):
-        return Type.PYTHON
     if isinstance(value, PythonValue):
         return Type.PYTHON_VALUE
     if isinstance(value, Product):
@@ -170,6 +240,8 @@ def _type_of(value: Value) -> RizType | None:
         return ProductType(tuple(item_types))
     if isinstance(value, NativeFunction):
         return value.signature
+    if isinstance(value, ModuleValue):
+        return value.interface
     return value.signature  # the remaining Value variant is Closure
 
 
@@ -207,6 +279,15 @@ def _same_public_type(left: RizType, right: RizType) -> bool:
         return len(left.items) == len(right.items) and all(
             _same_public_type(a, b) for a, b in zip(left.items, right.items)
         )
+    if isinstance(left, ModuleType) and isinstance(right, ModuleType):
+        return (
+            tuple(name for name, _ in left.members)
+            == tuple(name for name, _ in right.members)
+            and all(
+                _same_public_type(a, b)
+                for (_, a), (_, b) in zip(left.members, right.members)
+            )
+        )
     if isinstance(left, FunctionType) and isinstance(right, FunctionType):
         return types_compatible(left, right)
     return False
@@ -217,6 +298,10 @@ def _is_concrete_type(value: RizType) -> bool:
         return True
     if isinstance(value, ProductType):
         return all(_is_concrete_type(item) for item in value.items)
+    if isinstance(value, ModuleType):
+        return _is_module_interface(value)
+    if isinstance(value, FunctionType):
+        return _is_concrete_function(value)
     return False
 
 
@@ -226,6 +311,15 @@ def _is_concrete_function(signature: FunctionType) -> bool:
         and not signature.variables
         and _is_concrete_type(signature.input)
         and _is_concrete_type(signature.output)
+    )
+
+
+def _is_module_interface(interface: ModuleType) -> bool:
+    names = tuple(name for name, _ in interface.members)
+    return (
+        len(names) == len(set(names))
+        and all(_is_bindable_name(name) for name in names)
+        and all(_is_concrete_type(member) for _, member in interface.members)
     )
 
 
@@ -239,6 +333,10 @@ def _rendered(result: Result[Value]) -> str:
             return str(value)
         case Err(error):
             raise AssertionError(f"expected a value, got error: {error!r}")
+
+
+def _import_python(runtime: Runtime) -> None:
+    assert runtime.evaluate("{python} = use") == Ok(Unit())
 
 
 def test_integer_parsing():
@@ -363,6 +461,7 @@ def test_named_destructuring_parse_errors():
 
 def test_python_module_attribute_call_and_integer_conversion():
     riz = Runtime()
+    _import_python(riz)
     source = 'python.module("math").attr("isqrt")(1764).integer()'
     assert riz.evaluate(source) == Ok(Integer(42))
     assert riz.evaluate('python.module("builtins").attr("len")("riz").integer()') == Ok(
@@ -375,6 +474,7 @@ def test_python_module_attribute_call_and_integer_conversion():
 
 def test_python_value_conversions_are_explicit_and_strict():
     riz = Runtime()
+    _import_python(riz)
     assert riz.evaluate(
         'python.module("builtins").attr("bool")(1).boolean()'
     ) == Ok(Boolean(True))
@@ -399,6 +499,7 @@ def test_python_value_conversions_are_explicit_and_strict():
 
 def test_python_calls_accept_python_values_as_arguments():
     riz = Runtime()
+    _import_python(riz)
     source = (
         'builtins = python.module("builtins")\n'
         'sys = python.module("sys")\n'
@@ -411,6 +512,7 @@ def test_python_calls_accept_python_values_as_arguments():
 
 def test_python_values_stay_wrapped_until_converted():
     riz = Runtime()
+    _import_python(riz)
     result = riz.evaluate('python.module("math").attr("isqrt")(9)')
     assert isinstance(result, Ok)
     assert isinstance(result.value, PythonValue)
@@ -420,7 +522,9 @@ def test_python_values_stay_wrapped_until_converted():
 
 def test_python_bridge_values_do_not_expose_implementation_details():
     riz = Runtime()
-    assert _rendered(riz.evaluate("python")) == "<python>"
+    assert isinstance(riz.evaluate("python"), Err)
+    _import_python(riz)
+    assert _rendered(riz.evaluate("python")) == "<module use.python>"
     assert _rendered(riz.evaluate("python.module")) == "<fn python.module>"
     assert _rendered(riz.evaluate('python.module("math")')) == "<python value>"
     assert _rendered(
@@ -430,6 +534,7 @@ def test_python_bridge_values_do_not_expose_implementation_details():
 
 def test_python_interop_errors_are_riz_errors():
     riz = Runtime()
+    _import_python(riz)
     failures = (
         'python.module("module_that_does_not_exist")',
         'python.module("math").attr("missing")',
@@ -445,6 +550,7 @@ def test_python_interop_errors_are_riz_errors():
 
 def test_python_calls_reject_unconverted_riz_types():
     riz = Runtime()
+    _import_python(riz)
     result = riz.evaluate('python.module("builtins").attr("str")(1/2)')
     assert isinstance(result, Err)
     assert isinstance(result.error, RizTypeError)
@@ -452,6 +558,7 @@ def test_python_calls_reject_unconverted_riz_types():
 
 def test_python_argument_constraint_is_inferred_in_functions():
     riz = Runtime()
+    _import_python(riz)
     source = (
         'builtins = python.module("builtins")\n'
         'fn python_string(value): builtins.attr("str")(value).string()'
@@ -475,6 +582,7 @@ def test_python_argument_constraint_is_inferred_in_functions():
 
 def test_unit_is_not_implicitly_converted_to_python_none():
     riz = Runtime()
+    _import_python(riz)
     result = riz.evaluate('python.module("builtins").attr("str")(())')
     assert isinstance(result, Err)
     assert isinstance(result.error, RizTypeError)
@@ -482,8 +590,11 @@ def test_unit_is_not_implicitly_converted_to_python_none():
 
 def test_python_bridge_api_is_statically_checked():
     riz = Runtime()
+    _import_python(riz)
+    missing = riz.evaluate("python.missing")
+    assert isinstance(missing, Err)
+    assert isinstance(missing.error, RizNameError)
     failures = (
-        "python.missing",
         "python.module(1)",
         'python.module("math").attr(1)',
         'python.module("math").integer(1)',
