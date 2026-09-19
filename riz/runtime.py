@@ -307,6 +307,60 @@ def test_ratio_members():
     assert riz.evaluate("fn half(): 1/2\nhalf().denominator") == Ok(Integer(2))
 
 
+def test_named_structural_destructuring():
+    riz = Runtime()
+    assert riz.evaluate("{numerator, denominator} = 6/4") == Ok(Unit())
+    assert riz.lookup("numerator") == Ok(Integer(3))
+    assert riz.lookup("denominator") == Ok(Integer(2))
+
+
+def test_named_destructuring_participates_in_function_inference():
+    riz = Runtime()
+    source = "fn numerator_of(value):\n  {numerator} = value\n  numerator"
+    assert riz.evaluate(source) == Ok(Unit())
+    assert riz.evaluate("numerator_of(10/4)") == Ok(Integer(5))
+    rejected = riz.evaluate("numerator_of(1)")
+    assert isinstance(rejected, Err)
+    assert isinstance(rejected.error, RizTypeError)
+
+
+def test_named_destructuring_evaluates_its_source_once():
+    riz = Runtime()
+    calls = 0
+    signature = FunctionType(ProductType(()), Type.RATIONAL)
+
+    def fraction(
+        runtime: Runtime, arguments: Product[Value]
+    ) -> Result[Value]:
+        nonlocal calls
+        del runtime, arguments
+        calls += 1
+        return Ok(Ratio(6, 4))
+
+    assert riz.define_function("fraction", signature, fraction) == Ok(Unit())
+    assert riz.evaluate("{numerator, denominator} = fraction()") == Ok(Unit())
+    assert calls == 1
+    assert riz.lookup("numerator") == Ok(Integer(3))
+    assert riz.lookup("denominator") == Ok(Integer(2))
+
+
+def test_invalid_named_destructuring_is_atomic():
+    riz = Runtime()
+    result = riz.evaluate("{numerator, missing} = 1/2")
+    assert isinstance(result, Err)
+    assert isinstance(result.error, RizTypeError)
+    assert isinstance(riz.lookup("numerator"), Err)
+    assert isinstance(riz.lookup("missing"), Err)
+
+
+def test_named_destructuring_parse_errors():
+    riz = Runtime()
+    for source in ("{} = 1/2", "{numerator,} = 1/2", "{numerator, numerator} = 1/2", "{numerator}"):
+        result = riz.evaluate(source)
+        assert isinstance(result, Err)
+        assert isinstance(result.error, RizParseError)
+
+
 def test_python_module_attribute_call_and_integer_conversion():
     riz = Runtime()
     source = 'python.module("math").attr("isqrt")(1764).integer()'

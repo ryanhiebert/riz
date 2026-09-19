@@ -16,6 +16,7 @@ from .lex import (
     IdentifierToken,
     IndentToken,
     IntegerToken,
+    LeftBraceToken,
     LeftParenthesisToken,
     LessOrEqualToken,
     LessThanToken,
@@ -25,6 +26,7 @@ from .lex import (
     NotToken,
     OrToken,
     PlusToken,
+    RightBraceToken,
     RightParenthesisToken,
     SlashToken,
     StarToken,
@@ -177,7 +179,12 @@ class ProductPattern:
     items: tuple[Pattern, ...]
 
 
-Pattern = Bind | ProductPattern
+@dataclass(frozen=True)
+class NamedPattern:
+    names: tuple[str, ...]
+
+
+Pattern = Bind | ProductPattern | NamedPattern
 
 
 @dataclass(frozen=True)
@@ -290,6 +297,17 @@ class _Parser:
         return None if self.at_end() else self.tokens[self.position]
 
     def expression(self, min_bp: int) -> Result[Expr]:
+        if isinstance(self.peek(), LeftBraceToken):
+            if _ASSIGN_BP < min_bp:
+                return Err(RizParseError())
+            target = self._named_pattern()
+            if isinstance(target, Err) or not isinstance(self.peek(), EqualsToken):
+                return Err(RizParseError())
+            self.position += 1
+            right = self.expression(_ASSIGN_BP)
+            if isinstance(right, Err):
+                return right
+            return Ok(Binding(target.value, right.value))
         left = self._operand()
         if isinstance(left, Err):
             return left
@@ -576,6 +594,23 @@ class _Parser:
             return Err(RizParseError())
         self.position += 1
         return Ok(ProductPattern(tuple(items)))
+
+    def _named_pattern(self) -> Result[NamedPattern]:
+        self.position += 1  # consume `{`
+        names: list[str] = []
+        while True:
+            name = self.peek()
+            if not isinstance(name, IdentifierToken) or name.name in names:
+                return Err(RizParseError())
+            names.append(name.name)
+            self.position += 1
+            if not isinstance(self.peek(), CommaToken):
+                break
+            self.position += 1
+        if not isinstance(self.peek(), RightBraceToken):
+            return Err(RizParseError())
+        self.position += 1
+        return Ok(NamedPattern(tuple(names)))
 
 
 def parse(tokens: list[Token]) -> Result[Expr]:

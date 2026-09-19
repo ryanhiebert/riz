@@ -42,6 +42,14 @@ class RightParenthesisToken: ...
 
 
 @dataclass(frozen=True)
+class LeftBraceToken: ...
+
+
+@dataclass(frozen=True)
+class RightBraceToken: ...
+
+
+@dataclass(frozen=True)
 class LessThanToken: ...
 
 
@@ -124,6 +132,8 @@ Token = (
     | StarToken
     | LeftParenthesisToken
     | RightParenthesisToken
+    | LeftBraceToken
+    | RightBraceToken
     | LessThanToken
     | GreaterThanToken
     | LessOrEqualToken
@@ -222,6 +232,12 @@ def lex(source: str) -> list[Token]:
             tokens.append(RightParenthesisToken())
             if paren_depth > 0:
                 paren_depth -= 1
+            position += 1
+        elif char == "{":
+            tokens.append(LeftBraceToken())
+            position += 1
+        elif char == "}":
+            tokens.append(RightBraceToken())
             position += 1
         elif char == "<":
             if source[position + 1 : position + 2] == "=":
@@ -328,6 +344,16 @@ def test_string_literals_and_escapes():
 def test_member_access_tokens():
     assert lex("value.numerator") == [
         IdentifierToken("value"), DotToken(), IdentifierToken("numerator")
+    ]
+
+
+def test_named_pattern_tokens():
+    assert lex("{numerator, denominator}") == [
+        LeftBraceToken(),
+        IdentifierToken("numerator"),
+        CommaToken(),
+        IdentifierToken("denominator"),
+        RightBraceToken(),
     ]
 
 

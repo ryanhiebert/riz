@@ -29,6 +29,7 @@ from .parse import (
     LessOrEqual,
     LessThan,
     Member,
+    NamedPattern,
     Multiply,
     Negate,
     Not,
@@ -108,25 +109,7 @@ def eval(
             evaluated = eval(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
-            owner = evaluated.value
-            if isinstance(owner, Ratio):
-                if name == "numerator":
-                    return Ok(Integer(owner.numerator))
-                if name == "denominator":
-                    return Ok(Integer(owner.denominator))
-            if isinstance(owner, Python) and name == "module":
-                return Ok(_python_module_function())
-            if isinstance(owner, PythonValue) and name == "attr":
-                return Ok(_python_attr_function(owner))
-            if isinstance(owner, PythonValue) and name == "integer":
-                return Ok(_python_integer_function(owner))
-            if isinstance(owner, PythonValue) and name == "boolean":
-                return Ok(_python_boolean_function(owner))
-            if isinstance(owner, PythonValue) and name == "string":
-                return Ok(_python_string_function(owner))
-            if isinstance(owner, PythonValue) and name == "unit":
-                return Ok(_python_unit_function(owner))
-            raise AssertionError("type checker should reject unknown members")
+            return Ok(_member(evaluated.value, name))
         case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the
             # function's own name to the closure *inside* its captured env, so the
@@ -354,6 +337,31 @@ def _bind_pattern(pattern: Pattern, value: Value, env: dict[str, Value]) -> bool
                 _bind_pattern(item, item_value, env)
                 for item, item_value in zip(items, value.items)
             )
+        case NamedPattern(names):
+            for name in names:
+                env[name] = _member(value, name)
+            return True
+
+
+def _member(owner: Value, name: str) -> Value:
+    if isinstance(owner, Ratio):
+        if name == "numerator":
+            return Integer(owner.numerator)
+        if name == "denominator":
+            return Integer(owner.denominator)
+    if isinstance(owner, Python) and name == "module":
+        return _python_module_function()
+    if isinstance(owner, PythonValue) and name == "attr":
+        return _python_attr_function(owner)
+    if isinstance(owner, PythonValue) and name == "integer":
+        return _python_integer_function(owner)
+    if isinstance(owner, PythonValue) and name == "boolean":
+        return _python_boolean_function(owner)
+    if isinstance(owner, PythonValue) and name == "string":
+        return _python_string_function(owner)
+    if isinstance(owner, PythonValue) and name == "unit":
+        return _python_unit_function(owner)
+    raise AssertionError("type checker should reject unknown members")
 
 
 def _unary(

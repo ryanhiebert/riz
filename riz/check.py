@@ -12,7 +12,7 @@ from enum import Enum, auto
 from .parse import (
     Add, And, Bind, Binding, Block, BoolLiteral, Call, Conditional, Divide,
     Equal, Expr, Function, GreaterOrEqual, GreaterThan, IntLiteral, LessOrEqual,
-    LessThan, Member, Multiply, Negate, Not, NotEqual, Or, Pattern, ProductLiteral,
+    LessThan, Member, Multiply, NamedPattern, Negate, Not, NotEqual, Or, Pattern, ProductLiteral,
     ProductPattern, StringLiteral, Subtract, Variable, WhileLoop,
 )
 from .result import Err, Ok, Result
@@ -150,7 +150,7 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
             inferred = _check(value, env, state)
             if isinstance(inferred, Err):
                 return inferred
-            if not _bind_pattern(target, inferred.value, env):
+            if not _bind_pattern(target, inferred.value, env, state):
                 return Err(RizTypeError())
             return Ok(_U)
         case Variable(name):
@@ -162,7 +162,7 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
             input_type = _pattern_type(parameter)
             assert isinstance(input_type, ProductType)
             frame = dict(env)
-            if not _bind_pattern(parameter, input_type, frame):
+            if not _bind_pattern(parameter, input_type, frame, local):
                 return Err(RizTypeError())
             output_type = TypeVariable()
             frame[name] = FunctionType(input_type, output_type, (), ())
@@ -321,9 +321,13 @@ def _pattern_type(pattern: Pattern) -> RizType:
     match pattern:
         case Bind(): return TypeVariable()
         case ProductPattern(items): return ProductType(tuple(_pattern_type(item) for item in items))
+        case NamedPattern():
+            raise AssertionError("named patterns are not function parameters yet")
 
 
-def _bind_pattern(pattern: Pattern, value: RizType, env: dict[str, RizType]) -> bool:
+def _bind_pattern(
+    pattern: Pattern, value: RizType, env: dict[str, RizType], state: _State
+) -> bool:
     match pattern:
         case Bind(name):
             env[name] = value
@@ -331,7 +335,16 @@ def _bind_pattern(pattern: Pattern, value: RizType, env: dict[str, RizType]) -> 
         case ProductPattern(items):
             if not isinstance(value, ProductType) or len(items) != len(value.items):
                 return False
-            return all(_bind_pattern(p, t, env) for p, t in zip(items, value.items))
+            return all(
+                _bind_pattern(p, t, env, state) for p, t in zip(items, value.items)
+            )
+        case NamedPattern(names):
+            for name in names:
+                member = _constrain(f"member:{name}", (Ok(value),), state)
+                if isinstance(member, Err):
+                    return False
+                env[name] = member.value
+            return True
 
 
 def _resolve(value: RizType, state: _State) -> RizType:
