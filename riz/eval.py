@@ -146,9 +146,21 @@ def eval(
                 bound = _bind_pattern(some_pattern, evaluated.value.value, frame)
                 if isinstance(bound, Err):
                     return bound
-                return eval(some_body, frame, functions)
+                result = eval(some_body, frame, functions)
+                if isinstance(result, Err):
+                    return result
+                pattern_names = _pattern_names(some_pattern)
+                env.update(
+                    (name, frame[name]) for name in env if name not in pattern_names
+                )
+                return result
             assert isinstance(evaluated.value, Nothing)
-            return eval(none_body, dict(env), functions)
+            frame = dict(env)
+            result = eval(none_body, frame, functions)
+            if isinstance(result, Err):
+                return result
+            env.update((name, frame[name]) for name in env)
+            return result
         case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the
             # function's own name to the closure *inside* its captured env, so the
@@ -387,6 +399,19 @@ def _bind_pattern(pattern: Pattern, value: Value, env: dict[str, Value]) -> Resu
                 members.append((name, member.value))
             env.update(members)
             return Ok(None)
+
+
+def _pattern_names(pattern: Pattern) -> set[str]:
+    match pattern:
+        case Bind(name):
+            return {name}
+        case ProductPattern(items):
+            collected: set[str] = set()
+            for item in items:
+                collected.update(_pattern_names(item))
+            return collected
+        case NamedPattern(names):
+            return set(names)
 
 
 def _member(owner: Value, name: str) -> Result[Value]:

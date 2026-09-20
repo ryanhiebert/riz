@@ -447,6 +447,43 @@ def test_option_match_bindings_are_case_local():
     assert isinstance(riz.lookup("value"), Err)
 
 
+def test_option_match_updates_preexisting_outer_bindings():
+    riz = Runtime()
+    source = (
+        "answer = 0\n"
+        "match Some(42):\n"
+        "  Some(value): answer = value\n"
+        "  None: answer = -1\n"
+        "answer"
+    )
+    assert riz.evaluate(source) == Ok(Integer(42))
+    assert isinstance(riz.lookup("value"), Err)
+
+
+def test_option_match_updates_from_none_and_widens_outer_types():
+    riz = Runtime()
+    source = (
+        "number = 1\n"
+        "match None:\n"
+        "  Some(value): number = value\n"
+        "  None: number = number / 2\n"
+        "number"
+    )
+    assert riz.evaluate(source) == Ok(Ratio(1, 2))
+
+
+def test_option_pattern_shadowing_does_not_replace_outer_binding():
+    riz = Runtime()
+    source = (
+        "value = 1\n"
+        "match Some(42):\n"
+        "  Some(value): value\n"
+        "  None: 0\n"
+        "value"
+    )
+    assert riz.evaluate(source) == Ok(Integer(1))
+
+
 def test_option_match_requires_both_cases_and_compatible_results():
     riz = Runtime()
     invalid = (

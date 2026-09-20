@@ -192,12 +192,20 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
             some_env = dict(env)
             if not _bind_pattern(some_pattern, _resolve(item, state), some_env, state):
                 return Err(RizTypeError())
+            pattern_names = _pattern_names(some_pattern)
             some_result = _check(some_body, some_env, state)
             if isinstance(some_result, Err):
                 return some_result
-            none_result = _check(none_body, dict(env), state)
+            none_env = dict(env)
+            none_result = _check(none_body, none_env, state)
             if isinstance(none_result, Err):
                 return none_result
+            for variable in list(env):
+                some_type = env[variable] if variable in pattern_names else some_env[variable]
+                joined_binding = _join_types(some_type, none_env[variable], state)
+                if joined_binding is None:
+                    return Err(RizTypeError())
+                env[variable] = joined_binding
             joined = _join_types(some_result.value, none_result.value, state)
             return Err(RizTypeError()) if joined is None else Ok(joined)
         case Function(name, parameter, body):
@@ -366,6 +374,19 @@ def _pattern_type(pattern: Pattern) -> RizType:
         case ProductPattern(items): return ProductType(tuple(_pattern_type(item) for item in items))
         case NamedPattern():
             raise AssertionError("named patterns are not function parameters yet")
+
+
+def _pattern_names(pattern: Pattern) -> set[str]:
+    match pattern:
+        case Bind(name):
+            return {name}
+        case ProductPattern(items):
+            collected: set[str] = set()
+            for item in items:
+                collected.update(_pattern_names(item))
+            return collected
+        case NamedPattern(names):
+            return set(names)
 
 
 def _bind_pattern(
