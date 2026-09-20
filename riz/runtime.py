@@ -8,13 +8,15 @@ from .boolean import Boolean
 from .check import (
     FunctionType,
     ModuleType,
-    OptionType,
+    OPTION,
     ProductType,
     RizNameError,
     RizType,
     RizTypeError,
+    RESULT,
     Type,
     TypeVariable,
+    VariantType,
     check,
     check_call_type,
     types_compatible,
@@ -33,7 +35,7 @@ from .integer import Integer
 from .lex import IdentifierToken, lex
 from .parse import RizParseError, parse
 from .product import Product
-from .option import Nothing, Some
+from .variant import Failure, Nothing, Some, Success, VariantValue
 from .ratio import Ratio
 from .result import Err, Ok, Result
 from .unit import Unit
@@ -212,6 +214,8 @@ _RESERVED_NAMES = {
     "False",
     "None",
     "Some",
+    "Ok",
+    "Err",
     "if",
     "else",
     "while",
@@ -252,11 +256,19 @@ def _type_of(value: Value) -> RizType | None:
                 return None
             item_types.append(item_type)
         return ProductType(tuple(item_types))
-    if isinstance(value, Some):
-        item_type = _type_of(value.value)
-        return None if item_type is None else OptionType(item_type)
-    if isinstance(value, Nothing):
-        return OptionType(TypeVariable())
+    if isinstance(value, VariantValue):
+        definition = OPTION if value.type_name == "Option" else RESULT
+        arguments: list[RizType] = [
+            TypeVariable() for _ in range(definition.parameters)
+        ]
+        payload = dict(definition.constructors)[value.constructor]
+        if payload is not None:
+            assert value.value is not None
+            payload_type = _type_of(value.value)
+            if payload_type is None:
+                return None
+            arguments[payload] = payload_type
+        return VariantType(definition, tuple(arguments))
     if isinstance(value, NativeFunction):
         return value.signature
     if isinstance(value, ModuleValue):
@@ -307,7 +319,7 @@ def _same_public_type(left: RizType, right: RizType) -> bool:
                 for (_, a), (_, b) in zip(left.members, right.members)
             )
         )
-    if isinstance(left, OptionType) and isinstance(right, OptionType):
+    if isinstance(left, VariantType) and isinstance(right, VariantType):
         return types_compatible(left, right)
     if isinstance(left, FunctionType) and isinstance(right, FunctionType):
         return types_compatible(left, right)
@@ -321,8 +333,8 @@ def _is_concrete_type(value: RizType) -> bool:
         return all(_is_concrete_type(item) for item in value.items)
     if isinstance(value, ModuleType):
         return _is_module_interface(value)
-    if isinstance(value, OptionType):
-        return _is_concrete_type(value.item)
+    if isinstance(value, VariantType):
+        return all(_is_concrete_type(argument) for argument in value.arguments)
     if isinstance(value, FunctionType):
         return _is_concrete_function(value)
     return False
@@ -508,6 +520,64 @@ def test_option_match_participates_in_function_inference():
     assert riz.evaluate("default(Some(42), 0)") == Ok(Integer(42))
     assert riz.evaluate("default(None, 7)") == Ok(Integer(7))
     assert isinstance(riz.evaluate("default(Some(True), 0)"), Err)
+
+
+def test_result_values():
+    riz = Runtime()
+    assert riz.evaluate("Ok(42)") == Ok(Success(Integer(42)))
+    assert riz.evaluate('Err("missing")') == Ok(Failure(String("missing")))
+    assert _rendered(riz.evaluate("Ok(42)")) == "Ok(42)"
+    assert _rendered(riz.evaluate('Err("missing")')) == 'Err("missing")'
+
+
+def test_result_match_is_exhaustive_and_destructures_payloads():
+    riz = Runtime()
+    success = "match Ok(41):\n  Ok(value): value + 1\n  Err(error): 0"
+    assert riz.evaluate(success) == Ok(Integer(42))
+    failure = (
+        'match Err((41, "missing")):\n'
+        "  Ok(value): value\n"
+        "  Err((code, message)): code + 1"
+    )
+    assert riz.evaluate(failure) == Ok(Integer(42))
+
+
+def test_result_match_participates_in_function_inference():
+    riz = Runtime()
+    source = (
+        "fn recover(result, fallback):\n"
+        "  match result:\n"
+        "    Ok(value): value\n"
+        "    Err(error): fallback"
+    )
+    assert riz.evaluate(source) == Ok(Unit())
+    assert riz.evaluate("recover(Ok(42), 0)") == Ok(Integer(42))
+    assert riz.evaluate('recover(Err("missing"), 7)') == Ok(Integer(7))
+    assert isinstance(riz.evaluate("recover(Ok(True), 0)"), Err)
+
+
+def test_result_and_option_cases_cannot_be_mixed():
+    riz = Runtime()
+    invalid = (
+        "match Ok(1):\n  Ok(value): value\n  None: 0",
+        "match Ok(1):\n  Ok(value): value",
+        'match Err("bad"):\n  Ok(value): value\n  Err: 0',
+    )
+    for source in invalid:
+        assert isinstance(riz.evaluate(source), Err)
+
+
+def test_result_match_preserves_outer_binding_rules():
+    riz = Runtime()
+    source = (
+        "answer = 0\n"
+        'match Err("missing"):\n'
+        "  Ok(value): answer = value\n"
+        "  Err(error): answer = 42\n"
+        "answer"
+    )
+    assert riz.evaluate(source) == Ok(Integer(42))
+    assert isinstance(riz.lookup("error"), Err)
 
 
 def test_ratio_members():

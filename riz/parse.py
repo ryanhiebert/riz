@@ -56,12 +56,9 @@ class BoolLiteral:
 
 
 @dataclass(frozen=True)
-class SomeLiteral:
-    value: Expr
-
-
-@dataclass(frozen=True)
-class NoneLiteral: ...
+class VariantLiteral:
+    constructor: str
+    value: Expr | None
 
 
 @dataclass(frozen=True)
@@ -241,19 +238,23 @@ class Member:
 
 
 @dataclass(frozen=True)
+class VariantCase:
+    constructor: str
+    pattern: Pattern | None
+    body: Expr
+
+
+@dataclass(frozen=True)
 class Match:
     value: Expr
-    some_pattern: Pattern
-    some_body: Expr
-    none_body: Expr
+    cases: tuple[VariantCase, ...]
 
 
 Expr = (
     IntLiteral
     | StringLiteral
     | BoolLiteral
-    | SomeLiteral
-    | NoneLiteral
+    | VariantLiteral
     | Variable
     | Use
     | ProductLiteral
@@ -387,7 +388,7 @@ class _Parser:
                 return self._function()
             if token.name == "match":
                 return self._match()
-            if token.name == "Some":
+            if token.name in ("Some", "Ok", "Err"):
                 if not isinstance(self.peek(), LeftParenthesisToken):
                     return Err(RizParseError())
                 self.position += 1
@@ -397,9 +398,9 @@ class _Parser:
                 ):
                     return Err(RizParseError())
                 self.position += 1
-                return Ok(SomeLiteral(value.value))
+                return Ok(VariantLiteral(token.name, value.value))
             if token.name == "None":
-                return Ok(NoneLiteral())
+                return Ok(VariantLiteral(token.name, None))
             if token.name == "use":
                 return Ok(Use())
             if token.name == "else":
@@ -566,51 +567,36 @@ class _Parser:
             return Err(RizParseError())
         self.position += 1
 
-        some_pattern: Pattern | None = None
-        some_body: Expr | None = None
-        none_body: Expr | None = None
-        for _ in range(2):
+        cases: list[VariantCase] = []
+        while not isinstance(self.peek(), DedentToken):
             case = self.peek()
             if not isinstance(case, IdentifierToken):
                 return Err(RizParseError())
             self.position += 1
-            if case.name == "Some" and some_body is None:
-                if not isinstance(self.peek(), LeftParenthesisToken):
-                    return Err(RizParseError())
+            pattern: Pattern | None = None
+            if isinstance(self.peek(), LeftParenthesisToken):
                 self.position += 1
-                pattern = self._pattern()
-                if isinstance(pattern, Err) or not isinstance(
+                parsed_pattern = self._pattern()
+                if isinstance(parsed_pattern, Err) or not isinstance(
                     self.peek(), RightParenthesisToken
                 ):
                     return Err(RizParseError())
                 self.position += 1
-                some_pattern = pattern.value
-            elif case.name == "None" and none_body is None:
-                pass
-            else:
-                return Err(RizParseError())
+                pattern = parsed_pattern.value
             if not isinstance(self.peek(), ColonToken):
                 return Err(RizParseError())
             self.position += 1
             body = self._body()
             if isinstance(body, Err):
                 return body
-            if case.name == "Some":
-                some_body = body.value
-            else:
-                none_body = body.value
+            cases.append(VariantCase(case.name, pattern, body.value))
             if isinstance(self.peek(), NewlineToken):
                 self.position += 1
 
-        if (
-            some_pattern is None
-            or some_body is None
-            or none_body is None
-            or not isinstance(self.peek(), DedentToken)
-        ):
+        if not cases or not isinstance(self.peek(), DedentToken):
             return Err(RizParseError())
         self.position += 1
-        return Ok(Match(value.value, some_pattern, some_body, none_body))
+        return Ok(Match(value.value, tuple(cases)))
 
     def _body(self) -> Result[Expr]:
         # The body after a `:` — an inline expression on the same line, or an

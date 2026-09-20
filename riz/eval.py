@@ -33,18 +33,17 @@ from .parse import (
     NamedPattern,
     Multiply,
     Negate,
-    NoneLiteral,
     Not,
     NotEqual,
     Or,
     Pattern,
     ProductLiteral,
     ProductPattern,
-    SomeLiteral,
     StringLiteral,
     Subtract,
     Use,
     Variable,
+    VariantLiteral,
     WhileLoop,
 )
 from .ratio import Ratio
@@ -53,7 +52,7 @@ from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
 from .python import PythonValue, RizPythonError
-from .option import Nothing, Some
+from .variant import Failure, Nothing, Some, Success, VariantValue
 
 
 # A function value: its parameters, its body, and a *value-captured* snapshot of
@@ -98,12 +97,25 @@ class ModuleValue:
         return f"<module {self.name}>"
 
 
-type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | Some[Value] | Nothing | Product[Value] | Closure | NativeFunction | ModuleValue
+type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | VariantValue[Value] | Product[Value] | Closure | NativeFunction | ModuleValue
 type Numeric = Integer | Ratio
 
 
 @dataclass(frozen=True)
 class RizDivisionByZeroError: ...
+
+
+def _variant_value(constructor: str, value: Value | None) -> VariantValue[Value]:
+    if constructor == "None":
+        return Nothing()
+    assert value is not None
+    if constructor == "Some":
+        return Some(value)
+    if constructor == "Ok":
+        return Success(value)
+    if constructor == "Err":
+        return Failure(value)
+    raise AssertionError("type checker should reject unknown constructors")
 
 
 def eval(
@@ -132,34 +144,35 @@ def eval(
             if isinstance(evaluated, Err):
                 return evaluated
             return _member(evaluated.value, name)
-        case SomeLiteral(value):
+        case VariantLiteral(constructor, value):
+            if value is None:
+                return Ok(_variant_value(constructor, None))
             evaluated = eval(value, env, functions)
-            return evaluated if isinstance(evaluated, Err) else Ok(Some(evaluated.value))
-        case NoneLiteral():
-            return Ok(Nothing())
-        case Match(value, some_pattern, some_body, none_body):
+            return (
+                evaluated
+                if isinstance(evaluated, Err)
+                else Ok(_variant_value(constructor, evaluated.value))
+            )
+        case Match(value, cases):
             evaluated = eval(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
-            if isinstance(evaluated.value, Some):
-                frame = dict(env)
-                bound = _bind_pattern(some_pattern, evaluated.value.value, frame)
+            assert isinstance(evaluated.value, VariantValue)
+            selected = next(
+                case for case in cases if case.constructor == evaluated.value.constructor
+            )
+            frame = dict(env)
+            pattern_names: set[str] = set()
+            if selected.pattern is not None:
+                assert evaluated.value.value is not None
+                bound = _bind_pattern(selected.pattern, evaluated.value.value, frame)
                 if isinstance(bound, Err):
                     return bound
-                result = eval(some_body, frame, functions)
-                if isinstance(result, Err):
-                    return result
-                pattern_names = _pattern_names(some_pattern)
-                env.update(
-                    (name, frame[name]) for name in env if name not in pattern_names
-                )
-                return result
-            assert isinstance(evaluated.value, Nothing)
-            frame = dict(env)
-            result = eval(none_body, frame, functions)
+                pattern_names = _pattern_names(selected.pattern)
+            result = eval(selected.body, frame, functions)
             if isinstance(result, Err):
                 return result
-            env.update((name, frame[name]) for name in env)
+            env.update((name, frame[name]) for name in env if name not in pattern_names)
             return result
         case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the

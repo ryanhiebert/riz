@@ -12,9 +12,9 @@ from enum import Enum, auto
 from .parse import (
     Add, And, Bind, Binding, Block, BoolLiteral, Call, Conditional, Divide,
     Equal, Expr, Function, GreaterOrEqual, GreaterThan, IntLiteral, LessOrEqual,
-    LessThan, Match, Member, Multiply, NamedPattern, Negate, NoneLiteral, Not,
-    NotEqual, Or, Pattern, ProductLiteral, ProductPattern, SomeLiteral,
-    StringLiteral, Subtract, Use, Variable, WhileLoop,
+    LessThan, Match, Member, Multiply, NamedPattern, Negate, Not, NotEqual, Or,
+    Pattern, ProductLiteral, ProductPattern, StringLiteral, Subtract, Use,
+    Variable, VariantLiteral, WhileLoop,
 )
 from .result import Err, Ok, Result
 
@@ -59,8 +59,33 @@ class ModuleType:
 
 
 @dataclass(frozen=True)
-class OptionType:
-    item: RizType
+class VariantDefinition:
+    name: str
+    parameters: int
+    constructors: tuple[tuple[str, int | None], ...]
+
+
+@dataclass(frozen=True)
+class VariantType:
+    definition: VariantDefinition
+    arguments: tuple[RizType, ...]
+
+
+OPTION = VariantDefinition("Option", 1, (("Some", 0), ("None", None)))
+RESULT = VariantDefinition("Result", 2, (("Ok", 0), ("Err", 1)))
+_CONSTRUCTORS = {
+    constructor: (definition, payload)
+    for definition in (OPTION, RESULT)
+    for constructor, payload in definition.constructors
+}
+
+
+def OptionType(item: RizType) -> VariantType:
+    return VariantType(OPTION, (item,))
+
+
+def ResultType(success: RizType, failure: RizType) -> VariantType:
+    return VariantType(RESULT, (success, failure))
 
 
 @dataclass(frozen=True)
@@ -77,7 +102,7 @@ class FunctionType:
     variables: tuple[TypeVariable, ...] = ()
 
 
-type RizType = Type | TypeVariable | ProductType | ModuleType | OptionType | FunctionType | _NeverReturns
+type RizType = Type | TypeVariable | ProductType | ModuleType | VariantType | FunctionType | _NeverReturns
 
 
 @dataclass
@@ -177,37 +202,89 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
                 members = dict(resolved.members)
                 return Err(RizNameError()) if name not in members else Ok(members[name])
             return _constrain(f"member:{name}", (Ok(owner.value),), state)
-        case SomeLiteral(value):
-            checked = _check(value, env, state)
-            return checked if isinstance(checked, Err) else Ok(OptionType(checked.value))
-        case NoneLiteral():
-            return Ok(OptionType(TypeVariable()))
-        case Match(value, some_pattern, some_body, none_body):
+        case VariantLiteral(constructor, value):
+            if constructor not in _CONSTRUCTORS:
+                return Err(RizNameError())
+            definition, payload = _CONSTRUCTORS[constructor]
+            constructor_arguments: list[RizType] = [
+                TypeVariable() for _ in range(definition.parameters)
+            ]
+            if payload is None:
+                if value is not None:
+                    return Err(RizTypeError())
+            else:
+                if value is None:
+                    return Err(RizTypeError())
+                checked = _check(value, env, state)
+                if isinstance(checked, Err):
+                    return checked
+                constructor_arguments[payload] = checked.value
+            return Ok(VariantType(definition, tuple(constructor_arguments)))
+        case Match(value, cases):
             checked = _check(value, env, state)
             if isinstance(checked, Err):
                 return checked
-            item = TypeVariable()
-            if not _unify(checked.value, OptionType(item), state):
+            constructors = tuple(case.constructor for case in cases)
+            if not constructors or constructors[0] not in _CONSTRUCTORS:
                 return Err(RizTypeError())
-            some_env = dict(env)
-            if not _bind_pattern(some_pattern, _resolve(item, state), some_env, state):
+            definition = _CONSTRUCTORS[constructors[0]][0]
+            expected = tuple(name for name, _ in definition.constructors)
+            if len(constructors) != len(set(constructors)) or set(constructors) != set(expected):
                 return Err(RizTypeError())
-            pattern_names = _pattern_names(some_pattern)
-            some_result = _check(some_body, some_env, state)
-            if isinstance(some_result, Err):
-                return some_result
-            none_env = dict(env)
-            none_result = _check(none_body, none_env, state)
-            if isinstance(none_result, Err):
-                return none_result
+            variant_arguments = tuple(
+                TypeVariable() for _ in range(definition.parameters)
+            )
+            if not _unify(
+                checked.value, VariantType(definition, variant_arguments), state
+            ):
+                return Err(RizTypeError())
+
+            branches: list[tuple[dict[str, RizType], set[str], RizType]] = []
+            payloads = dict(definition.constructors)
+            for case in cases:
+                frame = dict(env)
+                payload = payloads[case.constructor]
+                if payload is None:
+                    if case.pattern is not None:
+                        return Err(RizTypeError())
+                    pattern_names: set[str] = set()
+                else:
+                    if case.pattern is None or not _bind_pattern(
+                        case.pattern,
+                        _resolve(variant_arguments[payload], state),
+                        frame,
+                        state,
+                    ):
+                        return Err(RizTypeError())
+                    pattern_names = _pattern_names(case.pattern)
+                result = _check(case.body, frame, state)
+                if isinstance(result, Err):
+                    return result
+                branches.append((frame, pattern_names, result.value))
+
             for variable in list(env):
-                some_type = env[variable] if variable in pattern_names else some_env[variable]
-                joined_binding = _join_types(some_type, none_env[variable], state)
-                if joined_binding is None:
-                    return Err(RizTypeError())
+                first_frame, first_names, _ = branches[0]
+                joined_binding = (
+                    env[variable]
+                    if variable in first_names
+                    else first_frame[variable]
+                )
+                for frame, pattern_names, _ in branches[1:]:
+                    branch_type = (
+                        env[variable] if variable in pattern_names else frame[variable]
+                    )
+                    joined = _join_types(joined_binding, branch_type, state)
+                    if joined is None:
+                        return Err(RizTypeError())
+                    joined_binding = joined
                 env[variable] = joined_binding
-            joined = _join_types(some_result.value, none_result.value, state)
-            return Err(RizTypeError()) if joined is None else Ok(joined)
+            joined_result = branches[0][2]
+            for _, _, branch_result in branches[1:]:
+                joined = _join_types(joined_result, branch_result, state)
+                if joined is None:
+                    return Err(RizTypeError())
+                joined_result = joined
+            return Ok(joined_result)
         case Function(name, parameter, body):
             local = _State(functions=state.functions)
             input_type = _pattern_type(parameter)
@@ -427,8 +504,10 @@ def _resolve(value: RizType, state: _State) -> RizType:
         return ProductType(tuple(_resolve(item, state) for item in value.items))
     if isinstance(value, ModuleType):
         return ModuleType(tuple((name, _resolve(item, state)) for name, item in value.members))
-    if isinstance(value, OptionType):
-        return OptionType(_resolve(value.item, state))
+    if isinstance(value, VariantType):
+        return VariantType(
+            value.definition, tuple(_resolve(argument, state) for argument in value.arguments)
+        )
     if isinstance(value, FunctionType):
         input_type = _resolve(value.input, state)
         assert isinstance(input_type, ProductType)
@@ -448,8 +527,8 @@ def _occurs(variable: TypeVariable, value: RizType, state: _State) -> bool:
         return any(_occurs(variable, item, state) for item in value.items)
     if isinstance(value, ModuleType):
         return any(_occurs(variable, item, state) for _, item in value.members)
-    if isinstance(value, OptionType):
-        return _occurs(variable, value.item, state)
+    if isinstance(value, VariantType):
+        return any(_occurs(variable, argument, state) for argument in value.arguments)
     if isinstance(value, FunctionType):
         return _occurs(variable, value.input, state) or _occurs(variable, value.output, state)
     return False
@@ -481,8 +560,15 @@ def _unify(left: RizType, right: RizType, state: _State) -> bool:
                 for (_, a), (_, b) in zip(left.members, right.members)
             )
         )
-    if isinstance(left, OptionType) and isinstance(right, OptionType):
-        return _unify(left.item, right.item, state)
+    if isinstance(left, VariantType) and isinstance(right, VariantType):
+        return (
+            left.definition is right.definition
+            and len(left.arguments) == len(right.arguments)
+            and all(
+                _unify(a, b, state)
+                for a, b in zip(left.arguments, right.arguments)
+            )
+        )
     return left is right
 
 
@@ -526,8 +612,15 @@ def _same_type(left: RizType, right: RizType) -> bool:
                 for (_, a), (_, b) in zip(left.members, right.members)
             )
         )
-    if isinstance(left, OptionType) and isinstance(right, OptionType):
-        return _same_type(left.item, right.item)
+    if isinstance(left, VariantType) and isinstance(right, VariantType):
+        return (
+            left.definition is right.definition
+            and len(left.arguments) == len(right.arguments)
+            and all(
+                _same_type(a, b)
+                for a, b in zip(left.arguments, right.arguments)
+            )
+        )
     if isinstance(left, FunctionType) and isinstance(right, FunctionType):
         return (
             _same_type(left.input, right.input)
@@ -568,8 +661,9 @@ def _collect_variables(value: RizType, found: list[TypeVariable]) -> None:
         for item in value.items: _collect_variables(item, found)
     elif isinstance(value, ModuleType):
         for _, item in value.members: _collect_variables(item, found)
-    elif isinstance(value, OptionType):
-        _collect_variables(value.item, found)
+    elif isinstance(value, VariantType):
+        for argument in value.arguments:
+            _collect_variables(argument, found)
     elif isinstance(value, FunctionType):
         nested: list[TypeVariable] = []
         _collect_variables(value.input, nested)
@@ -594,8 +688,11 @@ def _replace(value: RizType, replacements: dict[TypeVariable, TypeVariable]) -> 
     if isinstance(value, ProductType): return ProductType(tuple(_replace(item, replacements) for item in value.items))
     if isinstance(value, ModuleType):
         return ModuleType(tuple((name, _replace(item, replacements)) for name, item in value.members))
-    if isinstance(value, OptionType):
-        return OptionType(_replace(value.item, replacements))
+    if isinstance(value, VariantType):
+        return VariantType(
+            value.definition,
+            tuple(_replace(argument, replacements) for argument in value.arguments),
+        )
     if isinstance(value, FunctionType):
         input_type = _replace(value.input, replacements)
         assert isinstance(input_type, ProductType)
