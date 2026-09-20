@@ -56,6 +56,15 @@ class BoolLiteral:
 
 
 @dataclass(frozen=True)
+class SomeLiteral:
+    value: Expr
+
+
+@dataclass(frozen=True)
+class NoneLiteral: ...
+
+
+@dataclass(frozen=True)
 class Variable:
     name: str
 
@@ -231,10 +240,20 @@ class Member:
     name: str
 
 
+@dataclass(frozen=True)
+class Match:
+    value: Expr
+    some_pattern: Pattern
+    some_body: Expr
+    none_body: Expr
+
+
 Expr = (
     IntLiteral
     | StringLiteral
     | BoolLiteral
+    | SomeLiteral
+    | NoneLiteral
     | Variable
     | Use
     | ProductLiteral
@@ -242,6 +261,7 @@ Expr = (
     | Function
     | Call
     | Member
+    | Match
     | Conditional
     | WhileLoop
     | Block
@@ -365,6 +385,21 @@ class _Parser:
                 return self._while()
             if token.name == "fn":
                 return self._function()
+            if token.name == "match":
+                return self._match()
+            if token.name == "Some":
+                if not isinstance(self.peek(), LeftParenthesisToken):
+                    return Err(RizParseError())
+                self.position += 1
+                value = self.expression(0)
+                if isinstance(value, Err) or not isinstance(
+                    self.peek(), RightParenthesisToken
+                ):
+                    return Err(RizParseError())
+                self.position += 1
+                return Ok(SomeLiteral(value.value))
+            if token.name == "None":
+                return Ok(NoneLiteral())
             if token.name == "use":
                 return Ok(Use())
             if token.name == "else":
@@ -518,6 +553,64 @@ class _Parser:
         if isinstance(body, Err):
             return body
         return Ok(WhileLoop(condition.value, body.value))
+
+    def _match(self) -> Result[Expr]:
+        value = self.expression(0)
+        if isinstance(value, Err) or not isinstance(self.peek(), ColonToken):
+            return Err(RizParseError())
+        self.position += 1
+        if not isinstance(self.peek(), NewlineToken):
+            return Err(RizParseError())
+        self.position += 1
+        if not isinstance(self.peek(), IndentToken):
+            return Err(RizParseError())
+        self.position += 1
+
+        some_pattern: Pattern | None = None
+        some_body: Expr | None = None
+        none_body: Expr | None = None
+        for _ in range(2):
+            case = self.peek()
+            if not isinstance(case, IdentifierToken):
+                return Err(RizParseError())
+            self.position += 1
+            if case.name == "Some" and some_body is None:
+                if not isinstance(self.peek(), LeftParenthesisToken):
+                    return Err(RizParseError())
+                self.position += 1
+                pattern = self._pattern()
+                if isinstance(pattern, Err) or not isinstance(
+                    self.peek(), RightParenthesisToken
+                ):
+                    return Err(RizParseError())
+                self.position += 1
+                some_pattern = pattern.value
+            elif case.name == "None" and none_body is None:
+                pass
+            else:
+                return Err(RizParseError())
+            if not isinstance(self.peek(), ColonToken):
+                return Err(RizParseError())
+            self.position += 1
+            body = self._body()
+            if isinstance(body, Err):
+                return body
+            if case.name == "Some":
+                some_body = body.value
+            else:
+                none_body = body.value
+            if isinstance(self.peek(), NewlineToken):
+                self.position += 1
+
+        if (
+            some_pattern is None
+            or some_body is None
+            or none_body is None
+            or not isinstance(self.peek(), DedentToken)
+        ):
+            return Err(RizParseError())
+        self.position += 1
+        return Ok(Match(value.value, some_pattern, some_body, none_body))
 
     def _body(self) -> Result[Expr]:
         # The body after a `:` — an inline expression on the same line, or an

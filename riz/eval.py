@@ -9,7 +9,7 @@ from typing import cast, override
 
 from .boolean import Boolean
 from .integer import Integer
-from .check import FunctionType, ModuleType, ProductType, RizTypeError, Type
+from .check import FunctionType, ModuleType, OptionType, ProductType, RizTypeError, Type
 from .parse import (
     Add,
     And,
@@ -28,16 +28,19 @@ from .parse import (
     IntLiteral,
     LessOrEqual,
     LessThan,
+    Match,
     Member,
     NamedPattern,
     Multiply,
     Negate,
+    NoneLiteral,
     Not,
     NotEqual,
     Or,
     Pattern,
     ProductLiteral,
     ProductPattern,
+    SomeLiteral,
     StringLiteral,
     Subtract,
     Use,
@@ -50,6 +53,7 @@ from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
 from .python import PythonValue, RizPythonError
+from .option import Nothing, Some
 
 
 # A function value: its parameters, its body, and a *value-captured* snapshot of
@@ -94,7 +98,7 @@ class ModuleValue:
         return f"<module {self.name}>"
 
 
-type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | Product[Value] | Closure | NativeFunction | ModuleValue
+type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | Some[Value] | Nothing | Product[Value] | Closure | NativeFunction | ModuleValue
 type Numeric = Integer | Ratio
 
 
@@ -128,6 +132,23 @@ def eval(
             if isinstance(evaluated, Err):
                 return evaluated
             return _member(evaluated.value, name)
+        case SomeLiteral(value):
+            evaluated = eval(value, env, functions)
+            return evaluated if isinstance(evaluated, Err) else Ok(Some(evaluated.value))
+        case NoneLiteral():
+            return Ok(Nothing())
+        case Match(value, some_pattern, some_body, none_body):
+            evaluated = eval(value, env, functions)
+            if isinstance(evaluated, Err):
+                return evaluated
+            if isinstance(evaluated.value, Some):
+                frame = dict(env)
+                bound = _bind_pattern(some_pattern, evaluated.value.value, frame)
+                if isinstance(bound, Err):
+                    return bound
+                return eval(some_body, frame, functions)
+            assert isinstance(evaluated.value, Nothing)
+            return eval(none_body, dict(env), functions)
         case Function(name, parameter, body):
             # Capture the env by value (a copy), then tie the knot: bind the
             # function's own name to the closure *inside* its captured env, so the
@@ -273,49 +294,49 @@ def _python_attr_function(owner: PythonValue) -> NativeFunction:
 
 
 def _python_integer_function(owner: PythonValue) -> NativeFunction:
-    signature = FunctionType(ProductType(()), Type.INTEGER)
+    signature = FunctionType(ProductType(()), OptionType(Type.INTEGER))
 
     def invoke(arguments: Product[Value]) -> Result[Value]:
         assert not arguments.items
         if type(owner.value) is not int:
-            return Err(RizPythonError(TypeError("Python value is not an int")))
-        return Ok(Integer(owner.value))
+            return Ok(Nothing())
+        return Ok(Some(Integer(owner.value)))
 
     return NativeFunction("PythonValue.integer", signature, invoke)
 
 
 def _python_boolean_function(owner: PythonValue) -> NativeFunction:
-    signature = FunctionType(ProductType(()), Type.BOOLEAN)
+    signature = FunctionType(ProductType(()), OptionType(Type.BOOLEAN))
 
     def invoke(arguments: Product[Value]) -> Result[Value]:
         assert not arguments.items
         if type(owner.value) is not bool:
-            return Err(RizPythonError(TypeError("Python value is not a bool")))
-        return Ok(Boolean(owner.value))
+            return Ok(Nothing())
+        return Ok(Some(Boolean(owner.value)))
 
     return NativeFunction("PythonValue.boolean", signature, invoke)
 
 
 def _python_string_function(owner: PythonValue) -> NativeFunction:
-    signature = FunctionType(ProductType(()), Type.STRING)
+    signature = FunctionType(ProductType(()), OptionType(Type.STRING))
 
     def invoke(arguments: Product[Value]) -> Result[Value]:
         assert not arguments.items
         if type(owner.value) is not str:
-            return Err(RizPythonError(TypeError("Python value is not a str")))
-        return Ok(String(owner.value))
+            return Ok(Nothing())
+        return Ok(Some(String(owner.value)))
 
     return NativeFunction("PythonValue.string", signature, invoke)
 
 
 def _python_unit_function(owner: PythonValue) -> NativeFunction:
-    signature = FunctionType(ProductType(()), ProductType(()))
+    signature = FunctionType(ProductType(()), OptionType(ProductType(())))
 
     def invoke(arguments: Product[Value]) -> Result[Value]:
         assert not arguments.items
         if owner.value is not None:
-            return Err(RizPythonError(TypeError("Python value is not None")))
-        return Ok(Unit())
+            return Ok(Nothing())
+        return Ok(Some(Unit()))
 
     return NativeFunction("PythonValue.unit", signature, invoke)
 

@@ -8,11 +8,13 @@ from .boolean import Boolean
 from .check import (
     FunctionType,
     ModuleType,
+    OptionType,
     ProductType,
     RizNameError,
     RizType,
     RizTypeError,
     Type,
+    TypeVariable,
     check,
     check_call_type,
     types_compatible,
@@ -31,6 +33,7 @@ from .integer import Integer
 from .lex import IdentifierToken, lex
 from .parse import RizParseError, parse
 from .product import Product
+from .option import Nothing, Some
 from .ratio import Ratio
 from .result import Err, Ok, Result
 from .unit import Unit
@@ -204,7 +207,18 @@ class Runtime:
         return evaluated
 
 
-_RESERVED_NAMES = {"True", "False", "if", "else", "while", "fn", "use"}
+_RESERVED_NAMES = {
+    "True",
+    "False",
+    "None",
+    "Some",
+    "if",
+    "else",
+    "while",
+    "fn",
+    "match",
+    "use",
+}
 
 
 def _is_bindable_name(name: str) -> bool:
@@ -238,6 +252,11 @@ def _type_of(value: Value) -> RizType | None:
                 return None
             item_types.append(item_type)
         return ProductType(tuple(item_types))
+    if isinstance(value, Some):
+        item_type = _type_of(value.value)
+        return None if item_type is None else OptionType(item_type)
+    if isinstance(value, Nothing):
+        return OptionType(TypeVariable())
     if isinstance(value, NativeFunction):
         return value.signature
     if isinstance(value, ModuleValue):
@@ -288,6 +307,8 @@ def _same_public_type(left: RizType, right: RizType) -> bool:
                 for (_, a), (_, b) in zip(left.members, right.members)
             )
         )
+    if isinstance(left, OptionType) and isinstance(right, OptionType):
+        return types_compatible(left, right)
     if isinstance(left, FunctionType) and isinstance(right, FunctionType):
         return types_compatible(left, right)
     return False
@@ -300,6 +321,8 @@ def _is_concrete_type(value: RizType) -> bool:
         return all(_is_concrete_type(item) for item in value.items)
     if isinstance(value, ModuleType):
         return _is_module_interface(value)
+    if isinstance(value, OptionType):
+        return _is_concrete_type(value.item)
     if isinstance(value, FunctionType):
         return _is_concrete_function(value)
     return False
@@ -397,6 +420,59 @@ def test_empty_product_is_a_regular_function_argument():
     assert riz.evaluate("empty(())") == Ok(Boolean(True))
 
 
+def test_option_values():
+    riz = Runtime()
+    assert riz.evaluate("Some(42)") == Ok(Some(Integer(42)))
+    assert riz.evaluate("None") == Ok(Nothing())
+
+
+def test_option_match_is_exhaustive_and_destructures_some():
+    riz = Runtime()
+    source = "match Some(41):\n  Some(value): value + 1\n  None: 0"
+    assert riz.evaluate(source) == Ok(Integer(42))
+    source = "match None:\n  Some(value): value + 1\n  None: 0"
+    assert riz.evaluate(source) == Ok(Integer(0))
+
+
+def test_option_match_case_order_is_irrelevant():
+    riz = Runtime()
+    source = "match Some(42):\n  None: 0\n  Some(value): value"
+    assert riz.evaluate(source) == Ok(Integer(42))
+
+
+def test_option_match_bindings_are_case_local():
+    riz = Runtime()
+    source = "match Some(42):\n  Some(value): value\n  None: 0"
+    assert riz.evaluate(source) == Ok(Integer(42))
+    assert isinstance(riz.lookup("value"), Err)
+
+
+def test_option_match_requires_both_cases_and_compatible_results():
+    riz = Runtime()
+    invalid = (
+        "match Some(1):\n  Some(value): value",
+        "match Some(1):\n  Some(value): value\n  Some(other): other",
+        "match Some(1):\n  Some(value): value\n  None: True",
+        "match 1:\n  Some(value): value\n  None: 0",
+    )
+    for source in invalid:
+        assert isinstance(riz.evaluate(source), Err)
+
+
+def test_option_match_participates_in_function_inference():
+    riz = Runtime()
+    source = (
+        "fn default(option, fallback):\n"
+        "  match option:\n"
+        "    Some(value): value\n"
+        "    None: fallback"
+    )
+    assert riz.evaluate(source) == Ok(Unit())
+    assert riz.evaluate("default(Some(42), 0)") == Ok(Integer(42))
+    assert riz.evaluate("default(None, 7)") == Ok(Integer(7))
+    assert isinstance(riz.evaluate("default(Some(True), 0)"), Err)
+
+
 def test_ratio_members():
     riz = Runtime()
     assert riz.evaluate("value = 6/4\nvalue.numerator") == Ok(Integer(3))
@@ -463,12 +539,12 @@ def test_python_module_attribute_call_and_integer_conversion():
     riz = Runtime()
     _import_python(riz)
     source = 'python.module("math").attr("isqrt")(1764).integer()'
-    assert riz.evaluate(source) == Ok(Integer(42))
+    assert riz.evaluate(source) == Ok(Some(Integer(42)))
     assert riz.evaluate('python.module("builtins").attr("len")("riz").integer()') == Ok(
-        Integer(3)
+        Some(Integer(3))
     )
     assert riz.evaluate('python.module("builtins").attr("int")(False).integer()') == Ok(
-        Integer(0)
+        Some(Integer(0))
     )
 
 
@@ -477,24 +553,41 @@ def test_python_value_conversions_are_explicit_and_strict():
     _import_python(riz)
     assert riz.evaluate(
         'python.module("builtins").attr("bool")(1).boolean()'
-    ) == Ok(Boolean(True))
+    ) == Ok(Some(Boolean(True)))
     assert riz.evaluate(
         'python.module("builtins").attr("str")(42).string()'
-    ) == Ok(String("42"))
+    ) == Ok(Some(String("42")))
     assert riz.evaluate(
         'python.module("sys").attr("stdout").attr("flush")().unit()'
-    ) == Ok(Unit())
+    ) == Ok(Some(Unit()))
 
-    failures = (
+    mismatches = (
         'python.module("builtins").attr("bool")(1).integer()',
         'python.module("builtins").attr("int")(1).boolean()',
         'python.module("builtins").attr("int")(1).string()',
         'python.module("builtins").attr("str")(1).unit()',
     )
-    for source in failures:
-        result = riz.evaluate(source)
-        assert isinstance(result, Err)
-        assert isinstance(result.error, RizPythonError)
+    for source in mismatches:
+        assert riz.evaluate(source) == Ok(Nothing())
+
+
+def test_python_value_options_are_consumed_with_match():
+    riz = Runtime()
+    _import_python(riz)
+    success = (
+        'value = python.module("math").attr("isqrt")(1764)\n'
+        "match value.integer():\n"
+        "  Some(integer): integer + 1\n"
+        "  None: 0"
+    )
+    assert riz.evaluate(success) == Ok(Integer(43))
+    mismatch = (
+        'value = python.module("builtins").attr("str")(42)\n'
+        "match value.integer():\n"
+        "  Some(integer): integer + 1\n"
+        "  None: 0"
+    )
+    assert riz.evaluate(mismatch) == Ok(Integer(0))
 
 
 def test_python_calls_accept_python_values_as_arguments():
@@ -507,7 +600,8 @@ def test_python_calls_accept_python_values_as_arguments():
     )
     result = riz.evaluate(source)
     assert isinstance(result, Ok)
-    assert isinstance(result.value, Integer)
+    assert isinstance(result.value, Some)
+    assert isinstance(result.value.value, Integer)
 
 
 def test_python_values_stay_wrapped_until_converted():
@@ -540,7 +634,6 @@ def test_python_interop_errors_are_riz_errors():
         'python.module("math").attr("missing")',
         'python.module("math")(1)',
         'python.module("math").attr("isqrt")(-1)',
-        'python.module("builtins").attr("str")(42).integer()',
     )
     for source in failures:
         result = riz.evaluate(source)
@@ -564,16 +657,17 @@ def test_python_argument_constraint_is_inferred_in_functions():
         'fn python_string(value): builtins.attr("str")(value).string()'
     )
     assert riz.evaluate(source) == Ok(Unit())
-    assert riz.evaluate("python_string(42)") == Ok(String("42"))
-    assert riz.evaluate("python_string(True)") == Ok(String("True"))
-    assert riz.evaluate('python_string("hello")') == Ok(String("hello"))
+    assert riz.evaluate("python_string(42)") == Ok(Some(String("42")))
+    assert riz.evaluate("python_string(True)") == Ok(Some(String("True")))
+    assert riz.evaluate('python_string("hello")') == Ok(Some(String("hello")))
     python_value = riz.evaluate('python.module("math")')
     assert isinstance(python_value, Ok)
     assert riz.define("math", python_value.value) == Ok(Unit())
     converted = riz.evaluate("python_string(math)")
     assert isinstance(converted, Ok)
-    assert isinstance(converted.value, String)
-    assert "module" in converted.value.value
+    assert isinstance(converted.value, Some)
+    assert isinstance(converted.value.value, String)
+    assert "module" in converted.value.value.value
 
     rejected = riz.evaluate("python_string(1/2)")
     assert isinstance(rejected, Err)

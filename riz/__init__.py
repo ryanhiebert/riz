@@ -1,10 +1,11 @@
 """Public Python embedding API for Riz."""
 
 from .boolean import Boolean
-from .check import FunctionType, ModuleType, ProductType, Type
+from .check import FunctionType, ModuleType, OptionType, ProductType, Type
 from .eval import ModuleValue, Value
 from .integer import Integer
 from .product import Product
+from .option import Nothing, Some
 from .ratio import Ratio
 from .result import Err, Ok, Result
 from .runtime import Extension, Runtime
@@ -20,6 +21,7 @@ __all__ = [
     "Integer",
     "ModuleType",
     "ModuleValue",
+    "Nothing",
     "Ok",
     "Product",
     "ProductType",
@@ -29,6 +31,8 @@ __all__ = [
     "Runtime",
     "RizPythonError",
     "String",
+    "Some",
+    "OptionType",
     "Type",
     "Unit",
     "Value",

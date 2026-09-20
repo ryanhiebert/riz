@@ -27,7 +27,9 @@ def test_host_can_expose_an_existing_python_object():
     robot = Robot()
     runtime = riz.Runtime()
     assert runtime.define("robot", riz.PythonValue(robot)) == riz.Ok(riz.Unit())
-    assert runtime.evaluate('robot.attr("move")(10).unit()') == riz.Ok(riz.Unit())
+    assert runtime.evaluate('robot.attr("move")(10).unit()') == riz.Ok(
+        riz.Some(riz.Unit())
+    )
     assert robot.position == 10
 
 

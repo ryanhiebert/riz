@@ -12,8 +12,9 @@ from enum import Enum, auto
 from .parse import (
     Add, And, Bind, Binding, Block, BoolLiteral, Call, Conditional, Divide,
     Equal, Expr, Function, GreaterOrEqual, GreaterThan, IntLiteral, LessOrEqual,
-    LessThan, Member, Multiply, NamedPattern, Negate, Not, NotEqual, Or, Pattern, ProductLiteral,
-    ProductPattern, StringLiteral, Subtract, Use, Variable, WhileLoop,
+    LessThan, Match, Member, Multiply, NamedPattern, Negate, NoneLiteral, Not,
+    NotEqual, Or, Pattern, ProductLiteral, ProductPattern, SomeLiteral,
+    StringLiteral, Subtract, Use, Variable, WhileLoop,
 )
 from .result import Err, Ok, Result
 
@@ -58,6 +59,11 @@ class ModuleType:
 
 
 @dataclass(frozen=True)
+class OptionType:
+    item: RizType
+
+
+@dataclass(frozen=True)
 class Constraint:
     operation: str
     terms: tuple[RizType, ...]
@@ -71,7 +77,7 @@ class FunctionType:
     variables: tuple[TypeVariable, ...] = ()
 
 
-type RizType = Type | TypeVariable | ProductType | ModuleType | FunctionType | _NeverReturns
+type RizType = Type | TypeVariable | ProductType | ModuleType | OptionType | FunctionType | _NeverReturns
 
 
 @dataclass
@@ -109,10 +115,10 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
     "member:numerator": ((_R, _I),),
     "member:denominator": ((_R, _I),),
     "member:attr": ((_PV, FunctionType(ProductType((_S,)), _PV)),),
-    "member:integer": ((_PV, FunctionType(ProductType(()), _I)),),
-    "member:boolean": ((_PV, FunctionType(ProductType(()), _B)),),
-    "member:string": ((_PV, FunctionType(ProductType(()), _S)),),
-    "member:unit": ((_PV, FunctionType(ProductType(()), _U)),),
+    "member:integer": ((_PV, FunctionType(ProductType(()), OptionType(_I))),),
+    "member:boolean": ((_PV, FunctionType(ProductType(()), OptionType(_B))),),
+    "member:string": ((_PV, FunctionType(ProductType(()), OptionType(_S))),),
+    "member:unit": ((_PV, FunctionType(ProductType(()), OptionType(_U))),),
     "python_argument": ((_I,), (_B,), (_S,), (_PV,)),
 }
 
@@ -171,6 +177,29 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
                 members = dict(resolved.members)
                 return Err(RizNameError()) if name not in members else Ok(members[name])
             return _constrain(f"member:{name}", (Ok(owner.value),), state)
+        case SomeLiteral(value):
+            checked = _check(value, env, state)
+            return checked if isinstance(checked, Err) else Ok(OptionType(checked.value))
+        case NoneLiteral():
+            return Ok(OptionType(TypeVariable()))
+        case Match(value, some_pattern, some_body, none_body):
+            checked = _check(value, env, state)
+            if isinstance(checked, Err):
+                return checked
+            item = TypeVariable()
+            if not _unify(checked.value, OptionType(item), state):
+                return Err(RizTypeError())
+            some_env = dict(env)
+            if not _bind_pattern(some_pattern, _resolve(item, state), some_env, state):
+                return Err(RizTypeError())
+            some_result = _check(some_body, some_env, state)
+            if isinstance(some_result, Err):
+                return some_result
+            none_result = _check(none_body, dict(env), state)
+            if isinstance(none_result, Err):
+                return none_result
+            joined = _join_types(some_result.value, none_result.value, state)
+            return Err(RizTypeError()) if joined is None else Ok(joined)
         case Function(name, parameter, body):
             local = _State(functions=state.functions)
             input_type = _pattern_type(parameter)
@@ -377,6 +406,8 @@ def _resolve(value: RizType, state: _State) -> RizType:
         return ProductType(tuple(_resolve(item, state) for item in value.items))
     if isinstance(value, ModuleType):
         return ModuleType(tuple((name, _resolve(item, state)) for name, item in value.members))
+    if isinstance(value, OptionType):
+        return OptionType(_resolve(value.item, state))
     if isinstance(value, FunctionType):
         input_type = _resolve(value.input, state)
         assert isinstance(input_type, ProductType)
@@ -396,6 +427,8 @@ def _occurs(variable: TypeVariable, value: RizType, state: _State) -> bool:
         return any(_occurs(variable, item, state) for item in value.items)
     if isinstance(value, ModuleType):
         return any(_occurs(variable, item, state) for _, item in value.members)
+    if isinstance(value, OptionType):
+        return _occurs(variable, value.item, state)
     if isinstance(value, FunctionType):
         return _occurs(variable, value.input, state) or _occurs(variable, value.output, state)
     return False
@@ -427,6 +460,8 @@ def _unify(left: RizType, right: RizType, state: _State) -> bool:
                 for (_, a), (_, b) in zip(left.members, right.members)
             )
         )
+    if isinstance(left, OptionType) and isinstance(right, OptionType):
+        return _unify(left.item, right.item, state)
     return left is right
 
 
@@ -470,6 +505,8 @@ def _same_type(left: RizType, right: RizType) -> bool:
                 for (_, a), (_, b) in zip(left.members, right.members)
             )
         )
+    if isinstance(left, OptionType) and isinstance(right, OptionType):
+        return _same_type(left.item, right.item)
     if isinstance(left, FunctionType) and isinstance(right, FunctionType):
         return (
             _same_type(left.input, right.input)
@@ -510,6 +547,8 @@ def _collect_variables(value: RizType, found: list[TypeVariable]) -> None:
         for item in value.items: _collect_variables(item, found)
     elif isinstance(value, ModuleType):
         for _, item in value.members: _collect_variables(item, found)
+    elif isinstance(value, OptionType):
+        _collect_variables(value.item, found)
     elif isinstance(value, FunctionType):
         nested: list[TypeVariable] = []
         _collect_variables(value.input, nested)
@@ -534,6 +573,8 @@ def _replace(value: RizType, replacements: dict[TypeVariable, TypeVariable]) -> 
     if isinstance(value, ProductType): return ProductType(tuple(_replace(item, replacements) for item in value.items))
     if isinstance(value, ModuleType):
         return ModuleType(tuple((name, _replace(item, replacements)) for name, item in value.members))
+    if isinstance(value, OptionType):
+        return OptionType(_replace(value.item, replacements))
     if isinstance(value, FunctionType):
         input_type = _replace(value.input, replacements)
         assert isinstance(input_type, ProductType)
