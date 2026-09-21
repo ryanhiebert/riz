@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from typing import final
 
 from .boolean import Boolean
 from .check import (
@@ -42,6 +43,54 @@ from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
 from .python import PythonError, PythonValue
+
+
+@final
+class _Computation:
+    """One transactional execution within a runtime.
+
+    This is deliberately internal while the public lifecycle and suspension
+    contract are still unsettled. Keeping the working environments here makes
+    each evaluation a distinct object without changing Runtime.evaluate's
+    existing behavior.
+    """
+
+    def __init__(
+        self,
+        source: str,
+        types: dict[str, RizType],
+        values: dict[str, Value],
+        commit: Callable[[dict[str, RizType], dict[str, Value]], None],
+    ):
+        self.source = source
+        self.types = types
+        self.values = values
+        self._commit = commit
+        self.functions: dict[int, FunctionType] = {}
+        self.result: Result[Value] | None = None
+
+    def run(self) -> Result[Value]:
+        if self.result is not None:
+            raise RuntimeError("a computation can only be run once")
+
+        parsed = parse(lex(self.source))
+        if isinstance(parsed, Err):
+            self.result = parsed
+            return parsed
+
+        checked = check(parsed.value, self.types, self.functions)
+        if isinstance(checked, Err):
+            self.result = checked
+            return checked
+
+        evaluated = eval(parsed.value, self.values, self.functions)
+        self.result = evaluated
+        if isinstance(evaluated, Err):
+            return evaluated
+
+        # Commit both environments only after the entire computation succeeds.
+        self._commit(self.types, self.values)
+        return evaluated
 
 
 class Runtime:
@@ -192,23 +241,16 @@ class Runtime:
 
     def evaluate(self, source: str) -> Result[Value]:
         # Whole pipeline is Result-valued: no program error ever raises here.
-        parsed = parse(lex(source))
-        if isinstance(parsed, Err):
-            return parsed
-        # Check and evaluate against copies, committing both only if the whole
-        # statement succeeds — a binding that fails partway leaves no trace.
-        types = dict(self._types)
-        functions: dict[int, FunctionType] = {}
-        checked = check(parsed.value, types, functions)
-        if isinstance(checked, Err):
-            return checked
-        values = dict(self._values)
-        evaluated = eval(parsed.value, values, functions)
-        if isinstance(evaluated, Err):
-            return evaluated
-        self._types = types
-        self._values = values
-        return evaluated
+        def commit(types: dict[str, RizType], values: dict[str, Value]) -> None:
+            self._types = types
+            self._values = values
+
+        return _Computation(
+            source,
+            dict(self._types),
+            dict(self._values),
+            commit,
+        ).run()
 
 
 _RESERVED_NAMES = {
@@ -376,6 +418,42 @@ def _rendered(result: Result[Value]) -> str:
 
 def _import_python(runtime: Runtime) -> None:
     assert runtime.evaluate("{python} = use") == Ok(Unit())
+
+
+def test_each_evaluation_has_one_distinct_computation():
+    committed_types: dict[str, RizType] = {}
+    committed_values: dict[str, Value] = {}
+
+    def commit(types: dict[str, RizType], values: dict[str, Value]) -> None:
+        nonlocal committed_types, committed_values
+        committed_types = types
+        committed_values = values
+
+    first = _Computation("value = 41", {}, {}, commit)
+    assert first.run() == Ok(Unit())
+
+    second = _Computation(
+        "value + 1",
+        dict(committed_types),
+        dict(committed_values),
+        commit,
+    )
+    assert second is not first
+    assert second.types is not first.types
+    assert second.values is not first.values
+    assert second.run() == Ok(Integer(42))
+
+
+def test_computation_is_one_shot():
+    computation = _Computation("42", {}, {}, lambda types, values: None)
+    assert computation.run() == Ok(Integer(42))
+
+    try:
+        _ = computation.run()
+    except RuntimeError as error:
+        assert str(error) == "a computation can only be run once"
+    else:
+        raise AssertionError("running a finished computation should fail")
 
 
 def test_integer_parsing():
