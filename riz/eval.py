@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field
 import importlib
 from typing import cast, override
@@ -126,15 +126,15 @@ def _variant_value(constructor: str, value: Value | None) -> VariantValue[Value]
     raise AssertionError("type checker should reject unknown constructors")
 
 
-def eval(
+def evaluate(
     node: Expr,
     env: dict[str, Value],
     functions: dict[int, FunctionType] | None = None,
-) -> Result[Value]:
+) -> Generator[None, None, Result[Value]]:
     functions = {} if functions is None else functions
     match node:
         case Binding(target, value):
-            evaluated = eval(value, env, functions)
+            evaluated = yield from evaluate(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated  # a failed binding leaves the name untouched
             bound = _bind_pattern(target, evaluated.value, env)
@@ -148,21 +148,21 @@ def eval(
         case Use():
             return Ok(env["use"])
         case Member(value, name):
-            evaluated = eval(value, env, functions)
+            evaluated = yield from evaluate(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
             return _member(evaluated.value, name)
         case VariantLiteral(constructor, value):
             if value is None:
                 return Ok(_variant_value(constructor, None))
-            evaluated = eval(value, env, functions)
+            evaluated = yield from evaluate(value, env, functions)
             return (
                 evaluated
                 if isinstance(evaluated, Err)
                 else Ok(_variant_value(constructor, evaluated.value))
             )
         case Match(value, cases):
-            evaluated = eval(value, env, functions)
+            evaluated = yield from evaluate(value, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
             assert isinstance(evaluated.value, VariantValue)
@@ -177,7 +177,7 @@ def eval(
                 if isinstance(bound, Err):
                     return bound
                 pattern_names = _pattern_names(selected.pattern)
-            result = eval(selected.body, frame, functions)
+            result = yield from evaluate(selected.body, frame, functions)
             if isinstance(result, Err):
                 return result
             env.update((name, frame[name]) for name in env if name not in pattern_names)
@@ -196,7 +196,7 @@ def eval(
             env[name] = closure
             return Ok(Unit())
         case Call(callee, arguments):
-            evaluated = eval(callee, env, functions)
+            evaluated = yield from evaluate(callee, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
             function = evaluated.value
@@ -204,43 +204,47 @@ def eval(
                 raise AssertionError("type checker should reject calling a non-function")
             values: list[Value] = []
             for argument in arguments:
-                evaluated_argument = eval(argument, env, functions)
+                evaluated_argument = yield from evaluate(argument, env, functions)
                 if isinstance(evaluated_argument, Err):
                     return evaluated_argument
                 values.append(evaluated_argument.value)
             argument = Product(tuple(values))
             if isinstance(function, PythonValue):
                 return _call_python(function, argument)
-            return call(function, argument)
+            return (yield from _call(function, argument))
         case Conditional(condition, consequent, alternative):
-            evaluated = eval(condition, env, functions)
+            evaluated = yield from evaluate(condition, env, functions)
             if isinstance(evaluated, Err):
                 return evaluated
             # Lazy: only the taken branch runs (so the dead branch's errors, like
             # div-by-zero, never fire), in the shared env so its changes to
             # pre-existing variables persist (new branch vars are type-gated out).
             branch = consequent if _truth(evaluated.value) else alternative
-            return eval(branch, env, functions)
+            return (yield from evaluate(branch, env, functions))
         case WhileLoop(condition, body):
             # The body runs in the shared env, so a rebind like `n = n * 2`
             # persists and the next condition check sees it (loop progresses).
             while True:
-                tested = eval(condition, env, functions)
+                tested = yield from evaluate(condition, env, functions)
                 if isinstance(tested, Err):
                     return tested
                 if not _truth(tested.value):
                     return Ok(Unit())
-                ran = eval(body, env, functions)
+                ran = yield from evaluate(body, env, functions)
                 if isinstance(ran, Err):
                     return ran
+                # The loop has more work after its body even when that body's
+                # block has only one statement, so this is a real checkpoint.
+                yield
         case Block(statements):
             # Statements run in order, sharing env so a binding is visible to
             # later statements; the block's value is its last statement's.
-            result = eval(statements[0], env, functions)
+            result = yield from evaluate(statements[0], env, functions)
             for statement in statements[1:]:
                 if isinstance(result, Err):
                     return result
-                result = eval(statement, env, functions)
+                yield
+                result = yield from evaluate(statement, env, functions)
             return result
         case IntLiteral(value):
             return Ok(Integer(value))
@@ -253,49 +257,77 @@ def eval(
                 return Ok(Unit())
             product_values: list[Value] = []
             for item in items:
-                evaluated = eval(item, env, functions)
+                evaluated = yield from evaluate(item, env, functions)
                 if isinstance(evaluated, Err):
                     return evaluated
                 product_values.append(evaluated.value)
             return Ok(Product(tuple(product_values)))
         case Negate(operand):
-            return _unary(eval(operand, env, functions), _negate)
+            return _unary((yield from evaluate(operand, env, functions)), _negate)
         case Add(left, right):
-            return _binary(eval(left, env, functions), eval(right, env, functions), _add)
+            return (yield from _binary_expression(left, right, env, functions, _add))
         case Subtract(left, right):
-            return _binary(eval(left, env, functions), eval(right, env, functions), _subtract)
+            return (yield from _binary_expression(left, right, env, functions, _subtract))
         case Multiply(left, right):
-            return _binary(eval(left, env, functions), eval(right, env, functions), _multiply)
+            return (yield from _binary_expression(left, right, env, functions, _multiply))
         case Divide(left, right):
-            return _binary(eval(left, env, functions), eval(right, env, functions), _divide)
+            return (yield from _binary_expression(left, right, env, functions, _divide))
         case LessThan(left, right):
-            return _binary(eval(left, env, functions), eval(right, env, functions), _less_than)
+            return (yield from _binary_expression(left, right, env, functions, _less_than))
         case GreaterThan(left, right):
-            return _binary(eval(left, env, functions), eval(right, env, functions), _greater_than)
+            return (yield from _binary_expression(left, right, env, functions, _greater_than))
         case LessOrEqual(left, right):
-            return _binary(eval(left, env, functions), eval(right, env, functions), _less_or_equal)
+            return (yield from _binary_expression(left, right, env, functions, _less_or_equal))
         case GreaterOrEqual(left, right):
-            return _binary(eval(left, env, functions), eval(right, env, functions), _greater_or_equal)
+            return (yield from _binary_expression(left, right, env, functions, _greater_or_equal))
         case Equal(left, right):
-            return _binary_value(eval(left, env, functions), eval(right, env, functions), _equal)
+            return (yield from _binary_value_expression(left, right, env, functions, _equal))
         case NotEqual(left, right):
-            return _binary_value(eval(left, env, functions), eval(right, env, functions), _not_equal)
+            return (yield from _binary_value_expression(left, right, env, functions, _not_equal))
         case And(left, right):
-            return _binary_value(eval(left, env, functions), eval(right, env, functions), _and)
+            return (yield from _binary_value_expression(left, right, env, functions, _and))
         case Or(left, right):
-            return _binary_value(eval(left, env, functions), eval(right, env, functions), _or)
+            return (yield from _binary_value_expression(left, right, env, functions, _or))
         case Not(operand):
-            return _unary_value(eval(operand, env, functions), _logical_not)
+            return _unary_value(
+                (yield from evaluate(operand, env, functions)), _logical_not
+            )
 
 
-def call(function: Closure | NativeFunction, argument: Product[Value]) -> Result[Value]:
+def _call(
+    function: Closure | NativeFunction, argument: Product[Value]
+) -> Generator[None, None, Result[Value]]:
     if isinstance(function, NativeFunction):
         return function.callback(argument)
     frame = dict(function.env)
     bound = _bind_pattern(function.parameter, argument, frame)
     if isinstance(bound, Err):
         return bound
-    return eval(function.body, frame, function.functions)
+    return (yield from evaluate(function.body, frame, function.functions))
+
+
+def eval(
+    node: Expr,
+    env: dict[str, Value],
+    functions: dict[int, FunctionType] | None = None,
+) -> Result[Value]:
+    """Evaluate synchronously, ignoring cooperative statement checkpoints."""
+    evaluation = evaluate(node, env, functions)
+    while True:
+        try:
+            next(evaluation)
+        except StopIteration as completed:
+            return cast(Result[Value], completed.value)
+
+
+def call(function: Closure | NativeFunction, argument: Product[Value]) -> Result[Value]:
+    """Call synchronously, ignoring cooperative statement checkpoints."""
+    evaluation = _call(function, argument)
+    while True:
+        try:
+            next(evaluation)
+        except StopIteration as completed:
+            return cast(Result[Value], completed.value)
 
 
 def python_import_function() -> NativeFunction:
@@ -500,6 +532,30 @@ def _unary(
     if isinstance(operand, Err):
         return operand
     return op(_number(operand.value))
+
+
+def _binary_expression(
+    left: Expr,
+    right: Expr,
+    env: dict[str, Value],
+    functions: dict[int, FunctionType],
+    op: Callable[[Numeric, Numeric], Result[Value]],
+) -> Generator[None, None, Result[Value]]:
+    evaluated_left = yield from evaluate(left, env, functions)
+    evaluated_right = yield from evaluate(right, env, functions)
+    return _binary(evaluated_left, evaluated_right, op)
+
+
+def _binary_value_expression(
+    left: Expr,
+    right: Expr,
+    env: dict[str, Value],
+    functions: dict[int, FunctionType],
+    op: Callable[[Value, Value], Result[Value]],
+) -> Generator[None, None, Result[Value]]:
+    evaluated_left = yield from evaluate(left, env, functions)
+    evaluated_right = yield from evaluate(right, env, functions)
+    return _binary_value(evaluated_left, evaluated_right, op)
 
 
 def _binary(

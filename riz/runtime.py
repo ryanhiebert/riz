@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import final
+from collections.abc import Callable, Generator, Mapping
+from dataclasses import dataclass
+from typing import cast, final
 
 from .boolean import Boolean
 from .check import (
@@ -30,7 +31,7 @@ from .eval import (
     RizDivisionByZeroError,
     Value,
     call,
-    eval,
+    evaluate as evaluate_program,
     python_import_function,
 )
 from .integer import Integer
@@ -45,52 +46,55 @@ from .string import String
 from .python import PythonError, PythonValue
 
 
-@final
-class _Computation:
-    """One transactional execution within a runtime.
+@dataclass(frozen=True)
+class Yielded:
+    """The computation reached a cooperative checkpoint and remains runnable."""
 
-    This is deliberately internal while the public lifecycle and suspension
-    contract are still unsettled. Keeping the working environments here makes
-    each evaluation a distinct object without changing Runtime.evaluate's
-    existing behavior.
-    """
+
+@dataclass(frozen=True)
+class Finished:
+    """The computation completed with a value or a Riz program error."""
+
+    result: Result[Value]
+
+
+type ComputationEvent = Yielded | Finished
+
+
+@final
+class Computation:
+    """One unique, mutable execution machine owned by a runtime."""
 
     def __init__(
         self,
         source: str,
         types: dict[str, RizType],
         values: dict[str, Value],
+        functions: dict[int, FunctionType],
+        evaluation: Generator[None, None, Result[Value]],
         commit: Callable[[dict[str, RizType], dict[str, Value]], None],
     ):
-        self.source = source
-        self.types = types
-        self.values = values
+        self._source = source
+        self._types = types
+        self._values = values
+        self._functions = functions
+        self._evaluation = evaluation
         self._commit = commit
-        self.functions: dict[int, FunctionType] = {}
-        self.result: Result[Value] | None = None
+        self._finished = False
 
-    def run(self) -> Result[Value]:
-        if self.result is not None:
-            raise RuntimeError("a computation can only be run once")
-
-        parsed = parse(lex(self.source))
-        if isinstance(parsed, Err):
-            self.result = parsed
-            return parsed
-
-        checked = check(parsed.value, self.types, self.functions)
-        if isinstance(checked, Err):
-            self.result = checked
-            return checked
-
-        evaluated = eval(parsed.value, self.values, self.functions)
-        self.result = evaluated
-        if isinstance(evaluated, Err):
-            return evaluated
-
-        # Commit both environments only after the entire computation succeeds.
-        self._commit(self.types, self.values)
-        return evaluated
+    def advance(self) -> ComputationEvent:
+        """Run until the next statement checkpoint or completion."""
+        if self._finished:
+            raise RuntimeError("a finished computation cannot be advanced")
+        try:
+            next(self._evaluation)
+        except StopIteration as completed:
+            self._finished = True
+            result = cast(Result[Value], completed.value)
+            if isinstance(result, Ok):
+                self._commit(self._types, self._values)
+            return Finished(result)
+        return Yielded()
 
 
 class Runtime:
@@ -239,18 +243,45 @@ class Runtime:
             return Err(RizTypeError())
         return Ok(_specialize_callable(result.value, expected.value))
 
-    def evaluate(self, source: str) -> Result[Value]:
-        # Whole pipeline is Result-valued: no program error ever raises here.
+    def start(self, source: str) -> Result[Computation]:
+        """Parse and type-check source, then create its mutable execution machine."""
+        parsed = parse(lex(source))
+        if isinstance(parsed, Err):
+            return parsed
+
+        types = dict(self._types)
+        functions: dict[int, FunctionType] = {}
+        checked = check(parsed.value, types, functions)
+        if isinstance(checked, Err):
+            return checked
+
+        values = dict(self._values)
+
         def commit(types: dict[str, RizType], values: dict[str, Value]) -> None:
             self._types = types
             self._values = values
 
-        return _Computation(
-            source,
-            dict(self._types),
-            dict(self._values),
-            commit,
-        ).run()
+        evaluation = evaluate_program(parsed.value, values, functions)
+        return Ok(
+            Computation(
+                source,
+                types,
+                values,
+                functions,
+                evaluation,
+                commit,
+            )
+        )
+
+    def evaluate(self, source: str) -> Result[Value]:
+        """Run source synchronously through all cooperative checkpoints."""
+        started = self.start(source)
+        if isinstance(started, Err):
+            return started
+        while True:
+            event = started.value.advance()
+            if isinstance(event, Finished):
+                return event.result
 
 
 _RESERVED_NAMES = {
@@ -420,40 +451,53 @@ def _import_python(runtime: Runtime) -> None:
     assert runtime.evaluate("{python} = use") == Ok(Unit())
 
 
-def test_each_evaluation_has_one_distinct_computation():
-    committed_types: dict[str, RizType] = {}
-    committed_values: dict[str, Value] = {}
+def test_start_parses_and_type_checks_before_creating_a_computation():
+    runtime = Runtime()
+    assert isinstance(runtime.start("1 +"), Err)
+    assert isinstance(runtime.start("1 + True"), Err)
 
-    def commit(types: dict[str, RizType], values: dict[str, Value]) -> None:
-        nonlocal committed_types, committed_values
-        committed_types = types
-        committed_values = values
 
-    first = _Computation("value = 41", {}, {}, commit)
-    assert first.run() == Ok(Unit())
-
-    second = _Computation(
-        "value + 1",
-        dict(committed_types),
-        dict(committed_values),
-        commit,
+def test_computation_yields_between_nested_function_statements():
+    runtime = Runtime()
+    started = runtime.start(
+        "fn inner(value):\n"
+        + "  next = value + 1\n"
+        + "  next + 1\n"
+        + "inner(40)"
     )
-    assert second is not first
-    assert second.types is not first.types
-    assert second.values is not first.values
-    assert second.run() == Ok(Integer(42))
+    assert isinstance(started, Ok)
+    computation = started.value
+
+    assert computation.advance() == Yielded()  # after defining inner
+    assert computation.advance() == Yielded()  # inside inner, after binding next
+    assert computation.advance() == Finished(Ok(Integer(42)))
+    assert isinstance(runtime.lookup("inner"), Ok)
 
 
-def test_computation_is_one_shot():
-    computation = _Computation("42", {}, {}, lambda types, values: None)
-    assert computation.run() == Ok(Integer(42))
+def test_computation_yields_after_each_loop_iteration():
+    started = Runtime().start("value = 0\nwhile value < 2:\n  value = value + 1\nvalue")
+    assert isinstance(started, Ok)
+    computation = started.value
+
+    events: list[ComputationEvent] = []
+    while not events or not isinstance(events[-1], Finished):
+        events.append(computation.advance())
+
+    assert events == [Yielded(), Yielded(), Yielded(), Yielded(), Finished(Ok(Integer(2)))]
+
+
+def test_computation_cannot_advance_after_finishing():
+    started = Runtime().start("42")
+    assert isinstance(started, Ok)
+    computation = started.value
+    assert computation.advance() == Finished(Ok(Integer(42)))
 
     try:
-        _ = computation.run()
+        _ = computation.advance()
     except RuntimeError as error:
-        assert str(error) == "a computation can only be run once"
+        assert str(error) == "a finished computation cannot be advanced"
     else:
-        raise AssertionError("running a finished computation should fail")
+        raise AssertionError("advancing a finished computation should fail")
 
 
 def test_integer_parsing():

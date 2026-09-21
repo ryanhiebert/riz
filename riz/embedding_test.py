@@ -3,6 +3,17 @@ from collections.abc import Mapping
 import riz
 
 
+def test_public_embedding_api_advances_a_computation_through_checkpoints():
+    runtime = riz.Runtime()
+    started = runtime.start("value = 41\nvalue + 1")
+    assert isinstance(started, riz.Ok)
+
+    computation: riz.Computation = started.value
+    event: riz.ComputationEvent = computation.advance()
+    assert event == riz.Yielded()
+    assert computation.advance() == riz.Finished(riz.Ok(riz.Integer(42)))
+
+
 def test_public_embedding_api_defines_and_looks_up_values():
     runtime = riz.Runtime()
     assert runtime.define("answer", riz.Integer(42)) == riz.Ok(riz.Unit())

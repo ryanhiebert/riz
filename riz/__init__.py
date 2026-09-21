@@ -16,16 +16,19 @@ from .product import Product
 from .variant import Failure, Nothing, Some, Success, VariantValue
 from .ratio import Ratio
 from .result import Err, Ok, Result
-from .runtime import Extension, Runtime
+from .runtime import Computation, ComputationEvent, Extension, Finished, Runtime, Yielded
 from .string import String
 from .python import PythonError, PythonValue
 from .unit import Unit
 
 __all__ = [
     "Boolean",
+    "Computation",
+    "ComputationEvent",
     "Err",
     "Extension",
     "Failure",
+    "Finished",
     "FunctionType",
     "Integer",
     "ModuleType",
@@ -49,4 +52,5 @@ __all__ = [
     "Value",
     "VariantType",
     "VariantValue",
+    "Yielded",
 ]
