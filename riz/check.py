@@ -33,6 +33,7 @@ class Type(Enum):
     BOOLEAN = auto()
     STRING = auto()
     PYTHON_VALUE = auto()
+    PYTHON_ERROR = auto()
 
 
 @dataclass(frozen=True, eq=False)
@@ -112,9 +113,9 @@ class _State:
     functions: dict[int, FunctionType] = field(default_factory=dict)
 
 
-_I, _R, _B, _S, _PV = (
+_I, _R, _B, _S, _PV, _PE = (
     Type.INTEGER, Type.RATIONAL, Type.BOOLEAN, Type.STRING,
-    Type.PYTHON_VALUE,
+    Type.PYTHON_VALUE, Type.PYTHON_ERROR,
 )
 _U = ProductType(())
 _NUMERIC_PAIRS = ((_I, _I), (_I, _R), (_R, _I), (_R, _R))
@@ -139,7 +140,9 @@ _SIGNATURES: dict[str, tuple[tuple[RizType, ...], ...]] = {
     "and_or": ((_B, _B, _B), (_I, _I, _I)),
     "member:numerator": ((_R, _I),),
     "member:denominator": ((_R, _I),),
-    "member:attr": ((_PV, FunctionType(ProductType((_S,)), _PV)),),
+    "member:attr": (
+        (_PV, FunctionType(ProductType((_S,)), ResultType(_PV, _PE))),
+    ),
     "member:integer": ((_PV, FunctionType(ProductType(()), OptionType(_I))),),
     "member:boolean": ((_PV, FunctionType(ProductType(()), OptionType(_B))),),
     "member:string": ((_PV, FunctionType(ProductType(()), OptionType(_S))),),
@@ -344,7 +347,7 @@ def _check(node: Expr, env: dict[str, RizType], state: _State) -> Result[RizType
                 )
                 if not _solve(state):
                     return Err(RizTypeError())
-                return Ok(_PV)
+                return Ok(ResultType(_PV, _PE))
             if isinstance(function, TypeVariable):
                 output = TypeVariable()
                 inferred_function = FunctionType(argument_product, output, (), ())

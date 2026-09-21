@@ -9,7 +9,15 @@ from typing import cast, override
 
 from .boolean import Boolean
 from .integer import Integer
-from .check import FunctionType, ModuleType, OptionType, ProductType, RizTypeError, Type
+from .check import (
+    FunctionType,
+    ModuleType,
+    OptionType,
+    ProductType,
+    ResultType,
+    RizTypeError,
+    Type,
+)
 from .parse import (
     Add,
     And,
@@ -51,7 +59,7 @@ from .product import Product
 from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
-from .python import PythonValue, RizPythonError
+from .python import PythonError, PythonValue
 from .variant import Failure, Nothing, Some, Success, VariantValue
 
 
@@ -97,7 +105,7 @@ class ModuleValue:
         return f"<module {self.name}>"
 
 
-type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | VariantValue[Value] | Product[Value] | Closure | NativeFunction | ModuleValue
+type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | PythonError | VariantValue[Value] | Product[Value] | Closure | NativeFunction | ModuleValue
 type Numeric = Integer | Ratio
 
 
@@ -290,30 +298,36 @@ def call(function: Closure | NativeFunction, argument: Product[Value]) -> Result
     return eval(function.body, frame, function.functions)
 
 
-def python_module_function() -> NativeFunction:
-    signature = FunctionType(ProductType((Type.STRING,)), Type.PYTHON_VALUE)
+def python_import_function() -> NativeFunction:
+    signature = FunctionType(
+        ProductType((Type.STRING,)),
+        ResultType(Type.PYTHON_VALUE, Type.PYTHON_ERROR),
+    )
 
     def invoke(arguments: Product[Value]) -> Result[Value]:
         (name,) = arguments.items
         assert isinstance(name, String)
         try:
-            return Ok(PythonValue(importlib.import_module(name.value)))
+            return Ok(Success(PythonValue(importlib.import_module(name.value))))
         except Exception as error:
-            return Err(RizPythonError(error))
+            return Ok(Failure(PythonError(error)))
 
-    return NativeFunction("python.module", signature, invoke)
+    return NativeFunction("python.import", signature, invoke)
 
 
 def _python_attr_function(owner: PythonValue) -> NativeFunction:
-    signature = FunctionType(ProductType((Type.STRING,)), Type.PYTHON_VALUE)
+    signature = FunctionType(
+        ProductType((Type.STRING,)),
+        ResultType(Type.PYTHON_VALUE, Type.PYTHON_ERROR),
+    )
 
     def invoke(arguments: Product[Value]) -> Result[Value]:
         (name,) = arguments.items
         assert isinstance(name, String)
         try:
-            return Ok(PythonValue(cast(object, getattr(owner.value, name.value))))
+            return Ok(Success(PythonValue(cast(object, getattr(owner.value, name.value)))))
         except Exception as error:
-            return Err(RizPythonError(error))
+            return Ok(Failure(PythonError(error)))
 
     return NativeFunction("PythonValue.attr", signature, invoke)
 
@@ -370,10 +384,10 @@ def _call_python(function: PythonValue, arguments: Product[Value]) -> Result[Val
     try:
         converted = tuple(_to_python(argument) for argument in arguments.items)
         if not callable(function.value):
-            return Err(RizPythonError(TypeError("Python value is not callable")))
-        return Ok(PythonValue(function.value(*converted)))
+            return Ok(Failure(PythonError(TypeError("Python value is not callable"))))
+        return Ok(Success(PythonValue(function.value(*converted))))
     except Exception as error:
-        return Err(RizPythonError(error))
+        return Ok(Failure(PythonError(error)))
 
 
 def _to_python(value: Value) -> object:

@@ -15,6 +15,12 @@ class PythonValue:
         return "<python value>"
 
 
-@dataclass(frozen=True)
-class RizPythonError:
+@dataclass(frozen=True, eq=False)
+class PythonError:
+    """An opaque exception captured from a Python operation."""
+
     exception: Exception
+
+    @override
+    def __str__(self) -> str:
+        return "<python error>"

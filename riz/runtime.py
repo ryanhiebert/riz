@@ -10,6 +10,7 @@ from .check import (
     ModuleType,
     OPTION,
     ProductType,
+    ResultType,
     RizNameError,
     RizType,
     RizTypeError,
@@ -29,7 +30,7 @@ from .eval import (
     Value,
     call,
     eval,
-    python_module_function,
+    python_import_function,
 )
 from .integer import Integer
 from .lex import IdentifierToken, lex
@@ -40,7 +41,7 @@ from .ratio import Ratio
 from .result import Err, Ok, Result
 from .unit import Unit
 from .string import String
-from .python import PythonValue, RizPythonError
+from .python import PythonError, PythonValue
 
 
 class Runtime:
@@ -50,13 +51,14 @@ class Runtime:
         self._modules: dict[str, ModuleValue] = {}
         self._types: dict[str, RizType] = {"use": ModuleType(())}
         self._values: dict[str, Value] = {"use": self._module_root()}
-        python_module_type = FunctionType(
-            ProductType((Type.STRING,)), Type.PYTHON_VALUE
+        python_import_type = FunctionType(
+            ProductType((Type.STRING,)),
+            ResultType(Type.PYTHON_VALUE, Type.PYTHON_ERROR),
         )
         registered = self.register_module(
             "python",
-            ModuleType((("module", python_module_type),)),
-            lambda runtime: Ok({"module": python_module_function()}),
+            ModuleType((("import", python_import_type),)),
+            lambda runtime: Ok({"import": python_import_function()}),
         )
         assert isinstance(registered, Ok)
 
@@ -248,6 +250,8 @@ def _type_of(value: Value) -> RizType | None:
         return ProductType(())
     if isinstance(value, PythonValue):
         return Type.PYTHON_VALUE
+    if isinstance(value, PythonError):
+        return Type.PYTHON_ERROR
     if isinstance(value, Product):
         item_types: list[RizType] = []
         for item in value.items:
@@ -642,168 +646,118 @@ def test_named_destructuring_parse_errors():
         assert isinstance(result.error, RizParseError)
 
 
-def test_python_module_attribute_call_and_integer_conversion():
+def _successful_python(result: Result[Value]) -> PythonValue:
+    assert isinstance(result, Ok)
+    assert isinstance(result.value, Success)
+    assert isinstance(result.value.value, PythonValue)
+    return result.value.value
+
+
+def _failed_python(result: Result[Value]) -> PythonError:
+    assert isinstance(result, Ok)
+    assert isinstance(result.value, Failure)
+    assert isinstance(result.value.value, PythonError)
+    return result.value.value
+
+
+def test_python_import_returns_language_results():
     riz = Runtime()
     _import_python(riz)
-    source = 'python.module("math").attr("isqrt")(1764).integer()'
-    assert riz.evaluate(source) == Ok(Some(Integer(42)))
-    assert riz.evaluate('python.module("builtins").attr("len")("riz").integer()') == Ok(
-        Some(Integer(3))
-    )
-    assert riz.evaluate('python.module("builtins").attr("int")(False).integer()') == Ok(
-        Some(Integer(0))
-    )
+    math = _successful_python(riz.evaluate('python.import("math")'))
+    assert isinstance(math, PythonValue)
+    error = _failed_python(riz.evaluate('python.import("module_that_does_not_exist")'))
+    assert str(error) == "<python error>"
 
 
-def test_python_value_conversions_are_explicit_and_strict():
+def test_python_attribute_lookup_returns_language_results():
+    class Attributes:
+        answer: int = 42
+
     riz = Runtime()
-    _import_python(riz)
-    assert riz.evaluate(
-        'python.module("builtins").attr("bool")(1).boolean()'
-    ) == Ok(Some(Boolean(True)))
-    assert riz.evaluate(
-        'python.module("builtins").attr("str")(42).string()'
-    ) == Ok(Some(String("42")))
-    assert riz.evaluate(
-        'python.module("sys").attr("stdout").attr("flush")().unit()'
-    ) == Ok(Some(Unit()))
-
-    mismatches = (
-        'python.module("builtins").attr("bool")(1).integer()',
-        'python.module("builtins").attr("int")(1).boolean()',
-        'python.module("builtins").attr("int")(1).string()',
-        'python.module("builtins").attr("str")(1).unit()',
-    )
-    for source in mismatches:
-        assert riz.evaluate(source) == Ok(Nothing())
+    assert riz.define("owner", PythonValue(Attributes())) == Ok(Unit())
+    answer = _successful_python(riz.evaluate('owner.attr("answer")'))
+    assert answer.value == 42
+    _ = _failed_python(riz.evaluate('owner.attr("missing")'))
 
 
-def test_python_value_options_are_consumed_with_match():
+def test_python_calls_return_language_results():
+    def double(value: int) -> int:
+        return value * 2
+
     riz = Runtime()
-    _import_python(riz)
-    success = (
-        'value = python.module("math").attr("isqrt")(1764)\n'
-        "match value.integer():\n"
-        "  Some(integer): integer + 1\n"
-        "  None: 0"
-    )
-    assert riz.evaluate(success) == Ok(Integer(43))
-    mismatch = (
-        'value = python.module("builtins").attr("str")(42)\n'
-        "match value.integer():\n"
-        "  Some(integer): integer + 1\n"
-        "  None: 0"
-    )
-    assert riz.evaluate(mismatch) == Ok(Integer(0))
+    assert riz.define("double", PythonValue(double)) == Ok(Unit())
+    value = _successful_python(riz.evaluate("double(21)"))
+    assert value.value == 42
+    assert riz.define("not_callable", PythonValue(1)) == Ok(Unit())
+    _ = _failed_python(riz.evaluate("not_callable()"))
+    assert riz.define("raises", PythonValue(lambda: 1 / 0)) == Ok(Unit())
+    _ = _failed_python(riz.evaluate("raises()"))
 
 
-def test_python_calls_accept_python_values_as_arguments():
+def test_python_operations_compose_through_explicit_result_matches():
     riz = Runtime()
     _import_python(riz)
     source = (
-        'builtins = python.module("builtins")\n'
-        'sys = python.module("sys")\n'
-        'builtins.attr("len")(sys.attr("path")).integer()'
+        'match python.import("math"):\n'
+        "  Ok(math):\n"
+        '    match math.attr("isqrt"):\n'
+        "      Ok(isqrt):\n"
+        "        match isqrt(1764):\n"
+        "          Ok(value): value.integer()\n"
+        "          Err(error): None\n"
+        "      Err(error): None\n"
+        "  Err(error): None"
     )
-    result = riz.evaluate(source)
-    assert isinstance(result, Ok)
-    assert isinstance(result.value, Some)
-    assert isinstance(result.value.value, Integer)
+    assert riz.evaluate(source) == Ok(Some(Integer(42)))
 
 
-def test_python_values_stay_wrapped_until_converted():
+def test_python_value_projections_are_options_and_strict():
     riz = Runtime()
-    _import_python(riz)
-    result = riz.evaluate('python.module("math").attr("isqrt")(9)')
-    assert isinstance(result, Ok)
-    assert isinstance(result.value, PythonValue)
-    assert result.value.value == 3
-    assert str(result.value) == "<python value>"
+    values = {
+        "integer": PythonValue(42),
+        "boolean": PythonValue(True),
+        "string": PythonValue("riz"),
+        "unit": PythonValue(None),
+    }
+    for name, value in values.items():
+        assert riz.define(name, value) == Ok(Unit())
+    assert riz.evaluate("integer.integer()") == Ok(Some(Integer(42)))
+    assert riz.evaluate("boolean.boolean()") == Ok(Some(Boolean(True)))
+    assert riz.evaluate("string.string()") == Ok(Some(String("riz")))
+    assert riz.evaluate("unit.unit()") == Ok(Some(Unit()))
+    assert riz.evaluate("string.integer()") == Ok(Nothing())
 
 
-def test_python_bridge_values_do_not_expose_implementation_details():
+def test_python_calls_accept_only_unambiguous_python_arguments():
     riz = Runtime()
-    assert isinstance(riz.evaluate("python"), Err)
-    _import_python(riz)
-    assert _rendered(riz.evaluate("python")) == "<module use.python>"
-    assert _rendered(riz.evaluate("python.module")) == "<fn python.module>"
-    assert _rendered(riz.evaluate('python.module("math")')) == "<python value>"
-    assert _rendered(
-        riz.evaluate('python.module("math").attr("isqrt")')
-    ) == "<python value>"
-
-
-def test_python_interop_errors_are_riz_errors():
-    riz = Runtime()
-    _import_python(riz)
-    failures = (
-        'python.module("module_that_does_not_exist")',
-        'python.module("math").attr("missing")',
-        'python.module("math")(1)',
-        'python.module("math").attr("isqrt")(-1)',
-    )
-    for source in failures:
-        result = riz.evaluate(source)
-        assert isinstance(result, Err)
-        assert isinstance(result.error, RizPythonError)
-
-
-def test_python_calls_reject_unconverted_riz_types():
-    riz = Runtime()
-    _import_python(riz)
-    result = riz.evaluate('python.module("builtins").attr("str")(1/2)')
-    assert isinstance(result, Err)
-    assert isinstance(result.error, RizTypeError)
+    assert riz.define("length", PythonValue(len)) == Ok(Unit())
+    value = _successful_python(riz.evaluate('length("riz")'))
+    assert value.value == 3
+    assert isinstance(riz.evaluate("length(1/2)"), Err)
+    assert isinstance(riz.evaluate("length(())"), Err)
 
 
 def test_python_argument_constraint_is_inferred_in_functions():
     riz = Runtime()
-    _import_python(riz)
-    source = (
-        'builtins = python.module("builtins")\n'
-        'fn python_string(value): builtins.attr("str")(value).string()'
-    )
-    assert riz.evaluate(source) == Ok(Unit())
-    assert riz.evaluate("python_string(42)") == Ok(Some(String("42")))
-    assert riz.evaluate("python_string(True)") == Ok(Some(String("True")))
-    assert riz.evaluate('python_string("hello")') == Ok(Some(String("hello")))
-    python_value = riz.evaluate('python.module("math")')
-    assert isinstance(python_value, Ok)
-    assert riz.define("math", python_value.value) == Ok(Unit())
-    converted = riz.evaluate("python_string(math)")
-    assert isinstance(converted, Ok)
-    assert isinstance(converted.value, Some)
-    assert isinstance(converted.value.value, String)
-    assert "module" in converted.value.value.value
-
-    rejected = riz.evaluate("python_string(1/2)")
-    assert isinstance(rejected, Err)
-    assert isinstance(rejected.error, RizTypeError)
+    assert riz.define("python_string", PythonValue(str)) == Ok(Unit())
+    assert riz.evaluate("fn stringify(value): python_string(value)") == Ok(Unit())
+    for source in ("stringify(42)", "stringify(True)", 'stringify("hello")'):
+        assert isinstance(_successful_python(riz.evaluate(source)), PythonValue)
+    assert isinstance(riz.evaluate("stringify(1/2)"), Err)
 
 
-def test_unit_is_not_implicitly_converted_to_python_none():
+def test_python_bridge_rendering_and_static_checks():
     riz = Runtime()
+    assert isinstance(riz.evaluate("python"), Err)
     _import_python(riz)
-    result = riz.evaluate('python.module("builtins").attr("str")(())')
-    assert isinstance(result, Err)
-    assert isinstance(result.error, RizTypeError)
-
-
-def test_python_bridge_api_is_statically_checked():
-    riz = Runtime()
-    _import_python(riz)
-    missing = riz.evaluate("python.missing")
-    assert isinstance(missing, Err)
-    assert isinstance(missing.error, RizNameError)
-    failures = (
-        "python.module(1)",
-        'python.module("math").attr(1)',
-        'python.module("math").integer(1)',
-    )
-    for source in failures:
-        result = riz.evaluate(source)
-        assert isinstance(result, Err)
-        assert isinstance(result.error, RizTypeError)
+    assert _rendered(riz.evaluate("python")) == "<module use.python>"
+    assert _rendered(riz.evaluate("python.import")) == "<fn python.import>"
+    assert isinstance(riz.evaluate("python.module"), Err)
+    assert isinstance(riz.evaluate("python.missing"), Err)
+    assert isinstance(riz.evaluate("python.import(1)"), Err)
+    assert riz.define("value", PythonValue(1)) == Ok(Unit())
+    assert isinstance(riz.evaluate("value.attr(1)"), Err)
+    assert isinstance(riz.evaluate("value.integer(1)"), Err)
 
 
 def test_ratio_member_type_inference_in_functions():

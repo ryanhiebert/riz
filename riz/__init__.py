@@ -18,7 +18,7 @@ from .ratio import Ratio
 from .result import Err, Ok, Result
 from .runtime import Extension, Runtime
 from .string import String
-from .python import PythonValue, RizPythonError
+from .python import PythonError, PythonValue
 from .unit import Unit
 
 __all__ = [
@@ -35,11 +35,11 @@ __all__ = [
     "Product",
     "ProductType",
     "PythonValue",
+    "PythonError",
     "Ratio",
     "Result",
     "ResultType",
     "Runtime",
-    "RizPythonError",
     "String",
     "Some",
     "Success",
