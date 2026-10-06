@@ -15,6 +15,7 @@ from .check import (
     OptionType,
     ProductType,
     ResultType,
+    RizType,
     RizTypeError,
     Type,
 )
@@ -81,10 +82,17 @@ class Closure:
 
 
 @dataclass(frozen=True, eq=False)
+class NativeSuspension:
+    """A cooperative native call waiting for its host to supply a result."""
+
+    request: object
+
+
+@dataclass(frozen=True, eq=False)
 class NativeFunction:
     name: str
     signature: FunctionType
-    callback: Callable[[Product[Value]], Result[Value]]
+    callback: Callable[[Product[Value]], Result[Value] | NativeSuspension]
 
     @override
     def __str__(self) -> str:
@@ -109,6 +117,22 @@ type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | PythonErr
 type Numeric = Integer | Ratio
 
 
+type NativeResult = Result[Value] | NativeSuspension
+
+
+@dataclass(frozen=True)
+class EvaluationSuspension:
+    """Internal suspension signal with the native call's expected result type."""
+
+    request: object
+    expected: RizType
+
+
+type EvaluationSignal = EvaluationSuspension | None
+type EvaluationResponse = Result[Value] | None
+type Evaluation = Generator[EvaluationSignal, EvaluationResponse, Result[Value]]
+
+
 @dataclass(frozen=True)
 class RizDivisionByZeroError: ...
 
@@ -130,7 +154,7 @@ def evaluate(
     node: Expr,
     env: dict[str, Value],
     functions: dict[int, FunctionType] | None = None,
-) -> Generator[None, None, Result[Value]]:
+) -> Evaluation:
     functions = {} if functions is None else functions
     match node:
         case Binding(target, value):
@@ -296,9 +320,15 @@ def evaluate(
 
 def _call(
     function: Closure | NativeFunction, argument: Product[Value]
-) -> Generator[None, None, Result[Value]]:
+) -> Evaluation:
     if isinstance(function, NativeFunction):
-        return function.callback(argument)
+        result = function.callback(argument)
+        if isinstance(result, NativeSuspension):
+            resumed = yield EvaluationSuspension(result.request, function.signature.output)
+            if resumed is None:
+                raise AssertionError("a suspended native call must be resumed")
+            return resumed
+        return result
     frame = dict(function.env)
     bound = _bind_pattern(function.parameter, argument, frame)
     if isinstance(bound, Err):
@@ -315,9 +345,11 @@ def eval(
     evaluation = evaluate(node, env, functions)
     while True:
         try:
-            next(evaluation)
+            signal = next(evaluation)
         except StopIteration as completed:
             return cast(Result[Value], completed.value)
+        if isinstance(signal, EvaluationSuspension):
+            raise RuntimeError("synchronous evaluation cannot resolve a suspension")
 
 
 def call(function: Closure | NativeFunction, argument: Product[Value]) -> Result[Value]:
@@ -325,9 +357,11 @@ def call(function: Closure | NativeFunction, argument: Product[Value]) -> Result
     evaluation = _call(function, argument)
     while True:
         try:
-            next(evaluation)
+            signal = next(evaluation)
         except StopIteration as completed:
             return cast(Result[Value], completed.value)
+        if isinstance(signal, EvaluationSuspension):
+            raise RuntimeError("synchronous calls cannot resolve a suspension")
 
 
 def python_import_function() -> NativeFunction:
@@ -540,7 +574,7 @@ def _binary_expression(
     env: dict[str, Value],
     functions: dict[int, FunctionType],
     op: Callable[[Numeric, Numeric], Result[Value]],
-) -> Generator[None, None, Result[Value]]:
+) -> Evaluation:
     evaluated_left = yield from evaluate(left, env, functions)
     evaluated_right = yield from evaluate(right, env, functions)
     return _binary(evaluated_left, evaluated_right, op)
@@ -552,7 +586,7 @@ def _binary_value_expression(
     env: dict[str, Value],
     functions: dict[int, FunctionType],
     op: Callable[[Value, Value], Result[Value]],
-) -> Generator[None, None, Result[Value]]:
+) -> Evaluation:
     evaluated_left = yield from evaluate(left, env, functions)
     evaluated_right = yield from evaluate(right, env, functions)
     return _binary_value(evaluated_left, evaluated_right, op)

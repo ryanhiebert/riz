@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import cast, final
 
@@ -26,8 +26,13 @@ from .check import (
 )
 from .eval import (
     Closure,
+    Evaluation,
+    EvaluationResponse,
+    EvaluationSuspension,
     ModuleValue,
     NativeFunction,
+    NativeResult,
+    NativeSuspension,
     RizDivisionByZeroError,
     Value,
     call,
@@ -52,13 +57,20 @@ class Yielded:
 
 
 @dataclass(frozen=True)
+class Suspended:
+    """The computation is blocked until its host resumes the native call."""
+
+    request: object
+
+
+@dataclass(frozen=True)
 class Finished:
     """The computation completed with a value or a Riz program error."""
 
     result: Result[Value]
 
 
-type ComputationEvent = Yielded | Finished
+type ComputationEvent = Yielded | Suspended | Finished
 
 
 @final
@@ -71,7 +83,7 @@ class Computation:
         types: dict[str, RizType],
         values: dict[str, Value],
         functions: dict[int, FunctionType],
-        evaluation: Generator[None, None, Result[Value]],
+        evaluation: Evaluation,
         commit: Callable[[dict[str, RizType], dict[str, Value]], None],
     ):
         self._source = source
@@ -81,19 +93,47 @@ class Computation:
         self._evaluation = evaluation
         self._commit = commit
         self._finished = False
+        self._suspension: EvaluationSuspension | None = None
 
     def advance(self) -> ComputationEvent:
         """Run until the next statement checkpoint or completion."""
         if self._finished:
             raise RuntimeError("a finished computation cannot be advanced")
+        if self._suspension is not None:
+            raise RuntimeError("a suspended computation must be resumed")
+        return self._drive(None)
+
+    def resume(self, value: Value) -> ComputationEvent:
+        """Supply the result of a suspended native call and continue execution."""
+        if self._finished:
+            raise RuntimeError("a finished computation cannot be resumed")
+        suspension = self._suspension
+        if suspension is None:
+            raise RuntimeError("a runnable computation cannot be resumed")
+        self._suspension = None
+        response: Result[Value]
+        if _matches_type(value, suspension.expected):
+            response = Ok(value)
+        else:
+            response = Err(RizTypeError())
+        return self._drive(response)
+
+    def _drive(self, response: EvaluationResponse) -> ComputationEvent:
         try:
-            next(self._evaluation)
+            signal = (
+                next(self._evaluation)
+                if response is None
+                else self._evaluation.send(response)
+            )
         except StopIteration as completed:
             self._finished = True
             result = cast(Result[Value], completed.value)
             if isinstance(result, Ok):
                 self._commit(self._types, self._values)
             return Finished(result)
+        if isinstance(signal, EvaluationSuspension):
+            self._suspension = signal
+            return Suspended(signal.request)
         return Yielded()
 
 
@@ -178,13 +218,13 @@ class Runtime:
         self,
         name: str,
         signature: FunctionType,
-        callback: Callable[[Runtime, Product[Value]], Result[Value]],
+        callback: Callable[[Runtime, Product[Value]], NativeResult],
     ) -> Result[Unit]:
         """Define a typed native function callable from Riz.
 
-        Native callbacks use the same argument product and Result boundary as
-        Riz itself. Their declared signature is checked on registration and on
-        every returned value, keeping host code from violating Riz's type rules.
+        Native callbacks receive Riz's argument product and may return a Result
+        or request cooperative suspension. Their declared signature is checked
+        on every immediate or resumed value.
         """
         function = self.native_function(name, signature, callback)
         if isinstance(function, Err):
@@ -197,14 +237,16 @@ class Runtime:
         self,
         name: str,
         signature: FunctionType,
-        callback: Callable[[Runtime, Product[Value]], Result[Value]],
+        callback: Callable[[Runtime, Product[Value]], NativeResult],
     ) -> Result[NativeFunction]:
         """Create a checked native function value without globally binding it."""
         if not _is_bindable_name(name) or not _is_concrete_function(signature):
             return Err(RizTypeError())
 
-        def invoke(arguments: Product[Value]) -> Result[Value]:
+        def invoke(arguments: Product[Value]) -> NativeResult:
             result = callback(self, arguments)
+            if isinstance(result, NativeSuspension):
+                return result
             if isinstance(result, Err):
                 return result
             if not _matches_type(result.value, signature.output):
@@ -212,6 +254,10 @@ class Runtime:
             return result
 
         return Ok(NativeFunction(name, signature, invoke))
+
+    def suspend(self, request: object) -> NativeSuspension:
+        """Suspend a native call until its computation is resumed by the host."""
+        return NativeSuspension(request)
 
     def load(self, extension: Extension) -> Result[Unit]:
         """Load an extension atomically into this interpreter."""
@@ -280,6 +326,8 @@ class Runtime:
             return started
         while True:
             event = started.value.advance()
+            if isinstance(event, Suspended):
+                raise RuntimeError("synchronous evaluation cannot resolve a suspension")
             if isinstance(event, Finished):
                 return event.result
 
@@ -498,6 +546,13 @@ def test_computation_cannot_advance_after_finishing():
         assert str(error) == "a finished computation cannot be advanced"
     else:
         raise AssertionError("advancing a finished computation should fail")
+
+    try:
+        _ = computation.resume(Integer(1))
+    except RuntimeError as error:
+        assert str(error) == "a finished computation cannot be resumed"
+    else:
+        raise AssertionError("resuming a finished computation should fail")
 
 
 def test_integer_parsing():

@@ -10,13 +10,21 @@ from .check import (
     Type,
     VariantType,
 )
-from .eval import ModuleValue, Value
+from .eval import ModuleValue, NativeResult, Value
 from .integer import Integer
 from .product import Product
 from .variant import Failure, Nothing, Some, Success, VariantValue
 from .ratio import Ratio
 from .result import Err, Ok, Result
-from .runtime import Computation, ComputationEvent, Extension, Finished, Runtime, Yielded
+from .runtime import (
+    Computation,
+    ComputationEvent,
+    Extension,
+    Finished,
+    Runtime,
+    Suspended,
+    Yielded,
+)
 from .string import String
 from .python import PythonError, PythonValue
 from .unit import Unit
@@ -33,6 +41,7 @@ __all__ = [
     "Integer",
     "ModuleType",
     "ModuleValue",
+    "NativeResult",
     "Nothing",
     "Ok",
     "Product",
@@ -46,6 +55,7 @@ __all__ = [
     "String",
     "Some",
     "Success",
+    "Suspended",
     "OptionType",
     "Type",
     "Unit",

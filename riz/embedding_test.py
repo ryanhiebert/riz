@@ -14,6 +14,78 @@ def test_public_embedding_api_advances_a_computation_through_checkpoints():
     assert computation.advance() == riz.Finished(riz.Ok(riz.Integer(42)))
 
 
+def test_native_function_can_suspend_and_resume_through_nested_riz_calls():
+    runtime = riz.Runtime()
+    request = object()
+    signature = riz.FunctionType(
+        riz.ProductType((riz.Type.STRING,)),
+        riz.Type.INTEGER,
+    )
+
+    def wait_for_value(
+        runtime: riz.Runtime, arguments: riz.Product[riz.Value]
+    ) -> riz.NativeResult:
+        assert arguments == riz.Product((riz.String("answer"),))
+        return runtime.suspend(request)
+
+    assert (
+        runtime.define_function("wait_for_value", signature, wait_for_value)
+        == riz.Ok(riz.Unit())
+    )
+    source = (
+        "fn inner():\n"
+        + '  value = wait_for_value("answer")\n'
+        + "  value + 1\n"
+        + "fn outer():\n"
+        + "  inner() + 1\n"
+        + "outer()"
+    )
+    started = runtime.start(source)
+    assert isinstance(started, riz.Ok)
+    computation = started.value
+
+    assert computation.advance() == riz.Yielded()
+    assert computation.advance() == riz.Yielded()
+    assert computation.advance() == riz.Suspended(request)
+    assert computation.resume(riz.Integer(40)) == riz.Yielded()
+    assert computation.advance() == riz.Finished(riz.Ok(riz.Integer(42)))
+
+
+def test_suspended_computation_enforces_lifecycle_and_resumed_value_type():
+    runtime = riz.Runtime()
+    signature = riz.FunctionType(riz.ProductType(()), riz.Type.INTEGER)
+
+    def suspend(
+        runtime: riz.Runtime, arguments: riz.Product[riz.Value]
+    ) -> riz.NativeResult:
+        assert not arguments.items
+        return runtime.suspend("request")
+
+    assert runtime.define_function("suspend", signature, suspend) == riz.Ok(riz.Unit())
+    started = runtime.start("suspend()")
+    assert isinstance(started, riz.Ok)
+    computation = started.value
+
+    try:
+        _ = computation.resume(riz.Integer(1))
+    except RuntimeError as error:
+        assert str(error) == "a runnable computation cannot be resumed"
+    else:
+        raise AssertionError("resuming a runnable computation should fail")
+
+    assert computation.advance() == riz.Suspended("request")
+    try:
+        _ = computation.advance()
+    except RuntimeError as error:
+        assert str(error) == "a suspended computation must be resumed"
+    else:
+        raise AssertionError("advancing a suspended computation should fail")
+
+    resumed = computation.resume(riz.Boolean(True))
+    assert isinstance(resumed, riz.Finished)
+    assert isinstance(resumed.result, riz.Err)
+
+
 def test_public_embedding_api_defines_and_looks_up_values():
     runtime = riz.Runtime()
     assert runtime.define("answer", riz.Integer(42)) == riz.Ok(riz.Unit())
