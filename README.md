@@ -181,6 +181,24 @@ When choosing a useful next project:
 
 ## Development
 
+Run a UTF-8 Riz file as a script with:
+
+```console
+uv run riz example.riz
+```
+
+For example, save this as `example.riz`:
+
+```riz
+fn half(n): n / 2
+half(5)
+```
+
+The script runs as one complete program in a fresh runtime. Its final value is
+discarded; successful execution does not automatically print anything. Blank
+files are a successful no-op. Errors go to stderr and produce a nonzero exit
+status. `uv run python -m riz example.riz` works too.
+
 Run the interpreter shell with:
 
 ```console
