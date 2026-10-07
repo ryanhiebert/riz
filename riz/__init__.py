@@ -10,7 +10,7 @@ from .check import (
     Type,
     VariantType,
 )
-from .eval import ModuleValue, NativeResult, Value
+from .eval import ModuleValue, NativeResult, Suspend, Value
 from .integer import Integer
 from .product import Product
 from .variant import Failure, Nothing, Some, Success, VariantValue
@@ -55,6 +55,7 @@ __all__ = [
     "String",
     "Some",
     "Success",
+    "Suspend",
     "Suspended",
     "OptionType",
     "Type",

@@ -32,7 +32,7 @@ from .eval import (
     ModuleValue,
     NativeFunction,
     NativeResult,
-    NativeSuspension,
+    Suspend,
     RizDivisionByZeroError,
     Value,
     call,
@@ -245,7 +245,7 @@ class Runtime:
 
         def invoke(arguments: Product[Value]) -> NativeResult:
             result = callback(self, arguments)
-            if isinstance(result, NativeSuspension):
+            if isinstance(result, Suspend):
                 return result
             if isinstance(result, Err):
                 return result
@@ -254,10 +254,6 @@ class Runtime:
             return result
 
         return Ok(NativeFunction(name, signature, invoke))
-
-    def suspend(self, request: object) -> NativeSuspension:
-        """Suspend a native call until its computation is resumed by the host."""
-        return NativeSuspension(request)
 
     def load(self, extension: Extension) -> Result[Unit]:
         """Load an extension atomically into this interpreter."""

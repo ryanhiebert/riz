@@ -81,8 +81,8 @@ class Closure:
         return f"<fn {self.name}>"
 
 
-@dataclass(frozen=True, eq=False)
-class NativeSuspension:
+@dataclass(frozen=True)
+class Suspend:
     """A cooperative native call waiting for its host to supply a result."""
 
     request: object
@@ -92,7 +92,7 @@ class NativeSuspension:
 class NativeFunction:
     name: str
     signature: FunctionType
-    callback: Callable[[Product[Value]], Result[Value] | NativeSuspension]
+    callback: Callable[[Product[Value]], Result[Value] | Suspend]
 
     @override
     def __str__(self) -> str:
@@ -117,7 +117,7 @@ type Value = Integer | Ratio | Boolean | String | Unit | PythonValue | PythonErr
 type Numeric = Integer | Ratio
 
 
-type NativeResult = Result[Value] | NativeSuspension
+type NativeResult = Result[Value] | Suspend
 
 
 @dataclass(frozen=True)
@@ -323,7 +323,7 @@ def _call(
 ) -> Evaluation:
     if isinstance(function, NativeFunction):
         result = function.callback(argument)
-        if isinstance(result, NativeSuspension):
+        if isinstance(result, Suspend):
             resumed = yield EvaluationSuspension(result.request, function.signature.output)
             if resumed is None:
                 raise AssertionError("a suspended native call must be resumed")

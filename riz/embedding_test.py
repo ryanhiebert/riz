@@ -25,8 +25,9 @@ def test_native_function_can_suspend_and_resume_through_nested_riz_calls():
     def wait_for_value(
         runtime: riz.Runtime, arguments: riz.Product[riz.Value]
     ) -> riz.NativeResult:
+        del runtime
         assert arguments == riz.Product((riz.String("answer"),))
-        return runtime.suspend(request)
+        return riz.Suspend(request)
 
     assert (
         runtime.define_function("wait_for_value", signature, wait_for_value)
@@ -58,8 +59,9 @@ def test_suspended_computation_enforces_lifecycle_and_resumed_value_type():
     def suspend(
         runtime: riz.Runtime, arguments: riz.Product[riz.Value]
     ) -> riz.NativeResult:
+        del runtime
         assert not arguments.items
-        return runtime.suspend("request")
+        return riz.Suspend("request")
 
     assert runtime.define_function("suspend", signature, suspend) == riz.Ok(riz.Unit())
     started = runtime.start("suspend()")
