@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: mcr.microsoft.com/playwright:v1.64.0-noble
-      options: --shm-size=1g
+      options: --user 1001 --shm-size=1g
     timeout-minutes: 20
     env:
       # Also prove that the worker and wheel work under a repository URL path.
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: mcr.microsoft.com/playwright:v1.64.0-noble
-      options: --shm-size=1g
+      options: --user 1001 --shm-size=1g
     timeout-minutes: 15
     permissions:
       contents: read
