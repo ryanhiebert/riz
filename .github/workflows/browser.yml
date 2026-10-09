@@ -11,6 +11,9 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble
+      options: --shm-size=1g
     timeout-minutes: 20
     env:
       # Also prove that the worker and wheel work under a repository URL path.
@@ -38,9 +41,6 @@ jobs:
         run: |
           npm test
           npm run build
-      - name: Install test browsers
-        working-directory: web
-        run: npx playwright install --with-deps chromium firefox webkit
       - name: Test production site in browsers
         working-directory: web
         run: npm run test:browser
@@ -57,6 +57,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: check
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble
+      options: --shm-size=1g
     timeout-minutes: 15
     permissions:
       contents: read
@@ -93,7 +96,6 @@ jobs:
         env:
           SITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}/
         run: |
-          npx playwright install --with-deps chromium
           npm run test:browser -- --project=chromium
       - uses: actions/upload-pages-artifact@v4
         with:

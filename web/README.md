@@ -109,6 +109,8 @@ Generated wheels and site files are ignored by Git.
 `.github/workflows/browser.yml` checks Python, builds the site, and runs Playwright
 in Chromium, Firefox, and WebKit. On every push to `main`, a successful check job
 is followed by a Pages build and deployment. Pull requests only run checks.
+Both jobs use the pinned official Playwright container with browsers and system
+libraries preinstalled; its version must match `@playwright/test` in `package.json`.
 The deployment build uses Pages' configured base path and gets another Chromium
 run before upload. The workflow uses the built-in GitHub token and OIDC; no
 Cloudflare keys or GitHub secrets are needed.
