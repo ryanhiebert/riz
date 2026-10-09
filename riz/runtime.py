@@ -52,6 +52,13 @@ from .python import PythonError, PythonValue
 
 
 @dataclass(frozen=True)
+class OutputRequest:
+    """Text for the host to write verbatim before resuming with Unit."""
+
+    text: str
+
+
+@dataclass(frozen=True)
 class Yielded:
     """The computation reached a cooperative checkpoint and remains runnable."""
 
@@ -103,8 +110,8 @@ class Computation:
             raise RuntimeError("a suspended computation must be resumed")
         return self._drive(None)
 
-    def resume(self, value: Value) -> ComputationEvent:
-        """Supply the result of a suspended native call and continue execution."""
+    def resume(self, result: Result[Value]) -> ComputationEvent:
+        """Complete a suspended native call with a checked value or an error."""
         if self._finished:
             raise RuntimeError("a finished computation cannot be resumed")
         suspension = self._suspension
@@ -112,8 +119,8 @@ class Computation:
             raise RuntimeError("a runnable computation cannot be resumed")
         self._suspension = None
         response: Result[Value]
-        if _matches_type(value, suspension.expected):
-            response = Ok(value)
+        if isinstance(result, Err) or _matches_type(result.value, suspension.expected):
+            response = result
         else:
             response = Err(RizTypeError())
         return self._drive(response)
@@ -144,6 +151,12 @@ class Runtime:
         self._modules: dict[str, ModuleValue] = {}
         self._types: dict[str, RizType] = {"use": ModuleType(())}
         self._values: dict[str, Value] = {"use": self._module_root()}
+        registered_print = self.define_function(
+            "print",
+            FunctionType(ProductType((Type.STRING,)), ProductType(())),
+            _print,
+        )
+        assert isinstance(registered_print, Ok)
         python_import_type = FunctionType(
             ProductType((Type.STRING,)),
             ResultType(Type.PYTHON_VALUE, Type.PYTHON_ERROR),
@@ -342,6 +355,13 @@ _RESERVED_NAMES = {
     "match",
     "use",
 }
+
+
+def _print(runtime: Runtime, arguments: Product[Value]) -> NativeResult:
+    del runtime
+    text = arguments.items[0]
+    assert isinstance(text, String)
+    return Suspend(OutputRequest(text.value + "\n"))
 
 
 def _is_bindable_name(name: str) -> bool:
@@ -544,7 +564,7 @@ def test_computation_cannot_advance_after_finishing():
         raise AssertionError("advancing a finished computation should fail")
 
     try:
-        _ = computation.resume(Integer(1))
+        _ = computation.resume(Ok(Integer(1)))
     except RuntimeError as error:
         assert str(error) == "a finished computation cannot be resumed"
     else:

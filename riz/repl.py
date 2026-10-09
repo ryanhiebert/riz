@@ -9,6 +9,7 @@ Run it with `python -m riz` (or `python -m riz.repl`).
 
 import importlib
 
+from ._console import evaluate
 from .lex import ColonToken, lex
 from .result import Err, Ok
 from .runtime import Runtime
@@ -33,7 +34,7 @@ def render(source: str, runtime: Runtime) -> str | None:
     """
     if not source.strip():
         return None
-    match runtime.evaluate(source):
+    match evaluate(source, runtime):
         case Ok(Unit()):
             return None
         case Ok(value):

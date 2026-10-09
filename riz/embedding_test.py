@@ -1,6 +1,74 @@
 from collections.abc import Mapping
 
 import riz
+import pytest
+from .check import RizTypeError
+
+
+def test_resumed_output_failure_propagates_through_nested_calls():
+    runtime = riz.Runtime()
+    started = runtime.start(
+        'before = 1\nfn inner(): print("hello")\n'
+        + 'fn outer():\n  inner()\n  print("unreachable")\nouter()'
+    )
+    assert isinstance(started, riz.Ok)
+    computation = started.value
+    event = computation.advance()
+    while isinstance(event, riz.Yielded):
+        event = computation.advance()
+    assert event == riz.Suspended(riz.OutputRequest("hello\n"))
+    error = OSError("output unavailable")
+    assert computation.resume(riz.Err(error)) == riz.Finished(riz.Err(error))
+    assert isinstance(runtime.lookup("before"), riz.Err)
+    with pytest.raises(RuntimeError, match="finished computation cannot be resumed"):
+        _ = computation.resume(riz.Err(error))
+    with pytest.raises(RuntimeError, match="finished computation cannot be advanced"):
+        _ = computation.advance()
+
+
+def test_print_checks_one_string_argument_before_execution():
+    for source in (
+        'print(1)',
+        'print(True)',
+        'print(())',
+        'print()',
+        'print("a", "b")',
+        'fn say(text): print(text)\nsay(1)',
+        'print("before")\nprint(1)',
+    ):
+        result = riz.Runtime().start(source)
+        assert isinstance(result, riz.Err)
+        assert isinstance(result.error, RizTypeError)
+
+
+def test_print_suspends_through_nested_calls_and_host_collects_output():
+    started = riz.Runtime().start(
+        'fn inner(text): print(text)\nfn outer(text): inner(text)\n'
+        + 'outer("héllo")\nprint("")\nprint("already\\n")'
+    )
+    assert isinstance(started, riz.Ok)
+    computation = started.value
+    output: list[str] = []
+    event = computation.advance()
+    while not isinstance(event, riz.Finished):
+        if isinstance(event, riz.Suspended):
+            assert isinstance(event.request, riz.OutputRequest)
+            output.append(event.request.text)
+            event = computation.resume(riz.Ok(riz.Unit()))
+        else:
+            event = computation.advance()
+    assert output == ["héllo\n", "\n", "already\n\n"]
+    assert event.result == riz.Ok(riz.Unit())
+
+
+def test_print_requires_unit_when_resumed():
+    started = riz.Runtime().start('print("hello")')
+    assert isinstance(started, riz.Ok)
+    assert started.value.advance() == riz.Suspended(riz.OutputRequest("hello\n"))
+    event = started.value.resume(riz.Ok(riz.Integer(1)))
+    assert isinstance(event, riz.Finished)
+    assert isinstance(event.result, riz.Err)
+    assert isinstance(event.result.error, RizTypeError)
 
 
 def test_public_embedding_api_advances_a_computation_through_checkpoints():
@@ -48,7 +116,7 @@ def test_native_function_can_suspend_and_resume_through_nested_riz_calls():
     assert computation.advance() == riz.Yielded()
     assert computation.advance() == riz.Yielded()
     assert computation.advance() == riz.Suspended(request)
-    assert computation.resume(riz.Integer(40)) == riz.Yielded()
+    assert computation.resume(riz.Ok(riz.Integer(40))) == riz.Yielded()
     assert computation.advance() == riz.Finished(riz.Ok(riz.Integer(42)))
 
 
@@ -69,7 +137,7 @@ def test_suspended_computation_enforces_lifecycle_and_resumed_value_type():
     computation = started.value
 
     try:
-        _ = computation.resume(riz.Integer(1))
+        _ = computation.resume(riz.Ok(riz.Integer(1)))
     except RuntimeError as error:
         assert str(error) == "a runnable computation cannot be resumed"
     else:
@@ -83,7 +151,7 @@ def test_suspended_computation_enforces_lifecycle_and_resumed_value_type():
     else:
         raise AssertionError("advancing a suspended computation should fail")
 
-    resumed = computation.resume(riz.Boolean(True))
+    resumed = computation.resume(riz.Ok(riz.Boolean(True)))
     assert isinstance(resumed, riz.Finished)
     assert isinstance(resumed.result, riz.Err)
 

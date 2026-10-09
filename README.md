@@ -191,11 +191,14 @@ For example, save this as `example.riz`:
 
 ```riz
 fn half(n): n / 2
+print("Hello from Riz!")
 half(5)
 ```
 
 The script runs as one complete program in a fresh runtime. Its final value is
-discarded; successful execution does not automatically print anything. Blank
+discarded; only explicit `print` calls produce output. `print(text)` is an
+ordinary built-in function taking exactly one String, appending one newline, and
+returning Unit. There is no implicit string conversion. Blank
 files are a successful no-op. Errors go to stderr and produce a nonzero exit
 status. `uv run python -m riz example.riz` works too.
 
@@ -215,3 +218,38 @@ uv run basedpyright
 Tests live alongside the implementation. The main public embedding coverage is in
 `riz/embedding_test.py`, and the `asyncio` driver is exercised in
 `riz/asyncio_test.py`.
+
+## Embedded output
+
+The runtime owns no output stream. Built-in `print` suspends with the public,
+immutable `riz.OutputRequest(text)`, whose Python string includes the appended
+newline. A host writes or collects `request.text` verbatim and resumes the
+computation with `riz.Ok(riz.Unit())`. This works through nested ordinary function calls.
+Use `Runtime.start` and the existing `advance`/`resume` boundary; synchronous
+`Runtime.evaluate` cannot resolve suspensions. CLI and REPL drivers write requests
+to stdout. The async resolver passed to `riz.asyncio.run` handles the same request:
+
+```python
+import asyncio
+import riz
+import riz.asyncio
+
+output: list[str] = []
+
+async def resolve(request: object) -> riz.Result[riz.Value]:
+    assert isinstance(request, riz.OutputRequest)
+    output.append(request.text)
+    return riz.Ok(riz.Unit())
+
+started = riz.Runtime().start('print("Hello from an embedded program!")')
+assert isinstance(started, riz.Ok)
+assert asyncio.run(riz.asyncio.run(started.value, resolve)) == riz.Ok(riz.Unit())
+assert output == ["Hello from an embedded program!\n"]
+```
+
+A host may instead resume with `riz.Err(error)` to fail the native call. The
+error propagates through Riz execution just like an immediate native failure;
+Riz does not yet have syntax to catch it. Resolvers return `Ok(value)` or
+`Err(error)`. Python exceptions raised by a resolver or console write still
+remain host exceptions; automatic translation and cancellation semantics are
+still open questions.

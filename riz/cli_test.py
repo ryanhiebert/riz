@@ -64,6 +64,29 @@ def test_no_file_opens_repl():
     assert result.stderr == ""
 
 
+@pytest.mark.parametrize("command", [["riz"], [sys.executable, "-m", "riz"]])
+def test_script_prints_only_explicit_output(command: list[str], tmp_path: Path):
+    script = tmp_path / "output.riz"
+    _ = script.write_text(
+        'fn say(text): print(text)\nsay("héllo")\nprint("")\n42\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run([*command, str(script)], capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout == "héllo\n\n"
+    assert result.stderr == ""
+
+
+def test_repl_prints_output_and_preserves_value_echo():
+    result = subprocess.run(
+        ["riz"], input='print("hello")\n2 + 3\nexit\n',
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout == "riz> hello\nriz> 5\nriz> "
+    assert result.stderr == ""
+
+
 def test_extra_arguments_are_rejected():
     result = subprocess.run(
         ["riz", "one.riz", "two.riz"], capture_output=True, text=True

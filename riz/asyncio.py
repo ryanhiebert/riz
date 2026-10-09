@@ -10,15 +10,14 @@ from .result import Result
 from .runtime import Computation, Finished, Suspended, Yielded
 
 
-type Resolver = Callable[[object], Awaitable[Value]]
+type Resolver = Callable[[object], Awaitable[Result[Value]]]
 
 
 async def run(computation: Computation, resolve: Resolver) -> Result[Value]:
     """Run a computation, delegating suspension requests to ``resolve``.
 
-    Resolver exceptions, including cancellation, remain Python exceptions. Riz
-    exception injection is intentionally outside this adapter until the language
-    has an exception model.
+    Resolvers return Ok(value) or Err(error) to complete the native call.
+    Raised Python exceptions, including cancellation, remain host exceptions.
     """
     event = computation.advance()
     while True:
@@ -27,7 +26,7 @@ async def run(computation: Computation, resolve: Resolver) -> Result[Value]:
                 await asyncio.sleep(0)
                 event = computation.advance()
             case Suspended(request):
-                value = await resolve(request)
-                event = computation.resume(value)
+                result = await resolve(request)
+                event = computation.resume(result)
             case Finished(result):
                 return result

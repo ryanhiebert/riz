@@ -6,6 +6,7 @@ import sys
 from typing import cast
 
 from .result import Err
+from ._console import evaluate
 from .runtime import Runtime
 
 
@@ -29,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     if not source.strip():
         return 0
 
-    result = Runtime().evaluate(source)
+    result = evaluate(source, Runtime())
     if isinstance(result, Err):
         print(f"{path}: error: {type(result.error).__name__}", file=sys.stderr)
         return 1
