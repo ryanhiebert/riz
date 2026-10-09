@@ -215,6 +215,10 @@ uv run pytest
 uv run basedpyright
 ```
 
+An experimental browser shell lives in [`web`](web/README.md). It runs the same
+interpreter in a Pyodide worker, with xterm.js for terminal input and output.
+See that directory for local preview, Playwright testing, and GitHub Pages setup.
+
 Tests live alongside the implementation. The main public embedding coverage is in
 `riz/embedding_test.py`, and the `asyncio` driver is exercised in
 `riz/asyncio_test.py`.

@@ -1,0 +1,36 @@
+@import "@xterm/xterm/css/xterm.css";
+
+:root { font-family: system-ui, sans-serif; color: #183344; background: #f4f4ee; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 1080px; margin: auto; padding: 32px 28px 36px; }
+header { display: flex; align-items: center; justify-content: space-between; }
+a { color: inherit; }
+.wordmark { font-size: 36px; font-weight: 800; letter-spacing: -2px; text-decoration: none; }
+.wordmark span { color: #3c8462; }
+.intro { margin: 45px 0 30px; }
+.intro p { max-width: 370px; line-height: 1.7; margin: 0 0 4px; color: #526575; }
+.shell { overflow: hidden; background: #111b24; border-radius: 12px; box-shadow: 0 12px 28px #18334416; }
+.toolbar { background: #1b2a36; color: #c9d9e3; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; font-size: 13px; }
+.controls { display: flex; gap: 8px; flex-shrink: 0; }
+button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid #c5d2c6; padding: 8px 12px; background: #fff; color: #183344; }
+button:hover:not(:disabled) { background: #e4efe5; }
+button:focus-visible, a:focus-visible { outline: 3px solid #66aa85; outline-offset: 3px; }
+button:disabled { opacity: .45; cursor: default; }
+.controls button { color: #e4edf2; background: transparent; border-color: #526575; padding: 5px 10px; }
+.controls button:hover:not(:disabled) { background: #375163; }
+#terminal { height: 350px; padding: 18px; }
+.examples { margin-top: 30px; }
+h2 { font-size: 17px; margin: 0 0 8px; }
+.example-buttons { display: flex; gap: 12px; flex-wrap: wrap; }
+.example-buttons button { flex: 1; min-width: 180px; text-align: left; padding: 14px 16px; background: transparent; }
+code { display: block; margin-top: 8px; color: #39694d; font-size: 13px; }
+footer { margin-top: 30px; max-width: 820px; color: #64737a; font-size: 12px; line-height: 1.7; }
+footer a { display: inline-block; margin-top: 8px; }
+@media (max-width: 650px) {
+  main { padding: 22px 14px; }
+  .intro { display: block; margin: 30px 0 24px; }
+  .intro p { margin-top: 18px; }
+  .toolbar { padding: 10px; }
+  #terminal { padding: 12px 10px; height: 330px; }
+}

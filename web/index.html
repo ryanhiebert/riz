@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Try Riz, a statically typed language with exact arithmetic, in your browser." />
+    <title>Try Riz</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <a class="wordmark" href="https://github.com/ryanhiebert/riz">riz<span>.</span></a>
+      </header>
+      <section class="intro">
+        <p>Exact arithmetic, inferred types, and an interactive shell running on your device.</p>
+      </section>
+      <section class="shell" aria-label="Interactive Riz shell">
+        <div class="toolbar">
+          <span id="status" role="status" aria-live="polite">Starting the shell…</span>
+          <div class="controls">
+            <button id="run" disabled>Run</button>
+            <button id="stop" disabled>Stop</button>
+            <button id="reset">Reset</button>
+          </div>
+        </div>
+        <div id="terminal"></div>
+      </section>
+      <section class="examples" aria-label="Try an example">
+        <h2>Examples</h2>
+        <div class="example-buttons">
+          <button data-example="ratio" disabled>Exact arithmetic <code>5 / 2</code></button>
+          <button data-example="function" disabled>A function <code>half(5)</code></button>
+          <button data-example="python" disabled>Python interop <code>math.isqrt(9)</code></button>
+        </div>
+      </section>
+      <footer>
+        <a href="https://github.com/ryanhiebert/riz">Source &amp; language notes ↗</a>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

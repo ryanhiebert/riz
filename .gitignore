@@ -10,3 +10,9 @@ wheels/
 .venv
 
 uv.lock
+
+# Browser shell
+node_modules/
+web/public/runtime/
+web/test-results/
+web/playwright-report/
