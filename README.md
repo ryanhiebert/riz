@@ -223,6 +223,34 @@ Tests live alongside the implementation. The main public embedding coverage is i
 `riz/embedding_test.py`, and the `asyncio` driver is exercised in
 `riz/asyncio_test.py`.
 
+## Releases
+
+Publishing a GitHub release runs the Python checks, builds a wheel and source
+distribution, verifies the installed wheel, and publishes those artifacts to
+PyPI using Trusted Publishing.
+The release tag must exactly match the version in `pyproject.toml`, such as
+`0.1` (without a `v` prefix).
+
+Before the first release, configure a Trusted Publisher in the PyPI `riz`
+project with owner `ryanhiebert`, repository `riz`, workflow `publish.yml`,
+and environment `pypi`.
+Create the matching `pypi` GitHub environment with **Selected branches and
+tags**, one **Tag** rule with name pattern `[0-9]*`, no branch rules,
+and no required reviewers.
+No PyPI API token is needed.
+
+For each release:
+
+1. Set the version in `pyproject.toml` and turn the `CHANGELOG.md` Unreleased
+   section into a dated version entry, documenting any breaking changes.
+2. Merge the changes and confirm the Build and Browser shell workflows pass.
+3. Create and publish a GitHub release at that commit with the matching version
+   tag and changelog notes.
+4. Confirm the Publish workflow succeeds and the release appears on PyPI.
+
+`uv.lock` remains ignored so fresh CI runs resolve the latest dependencies
+allowed by `pyproject.toml`.
+
 ## Embedded output
 
 The runtime owns no output stream. Built-in `print` suspends with the public,

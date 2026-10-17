@@ -1,10 +1,18 @@
 [project]
 name = "riz"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.1"
+description = "A statically typed, interpreted, and embeddable programming language with Python interoperability"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ryanhiebert/riz"
+Repository = "https://github.com/ryanhiebert/riz"
+Issues = "https://github.com/ryanhiebert/riz/issues"
+Changelog = "https://github.com/ryanhiebert/riz/blob/main/CHANGELOG.md"
 
 [project.scripts]
 riz = "riz.cli:main"

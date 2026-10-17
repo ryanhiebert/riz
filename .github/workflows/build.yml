@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: uv sync --all-groups
+      - name: Run basedpyright
+        run: uv run basedpyright
+      - name: Run tests
+        run: uv run pytest
+      - name: Verify built package
+        run: |
+          uv build
+          uv run --isolated --no-project --with dist/riz-*.whl python -I -c 'import riz; assert riz.Runtime().evaluate("2 + 3") == riz.Ok(riz.Integer(5))'
+          uvx --from dist/riz-*.whl riz --help
+      - name: Verify release version
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          uv run python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          assert os.environ["RELEASE_TAG"] == version, "Release tag must match package version"
+          PY
+      - name: Upload distributions
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
